@@ -1,0 +1,17 @@
+[package]
+name = "audio-switch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+audio-switch-core = { path = "../audio-switch-core" }
+serde_json.workspace = true
+tungstenite.workspace = true
+windows.workspace = true
+
+[[bin]]
+name = "audio-switch"
+path = "src/main.rs"

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Actions": [
+    {
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "Icon": "imgs/action",
+      "Name": "Switch microphone",
+      "States": [
+        {
+          "FontSize": 16,
+          "Image": "imgs/primary",
+          "Title": "PRIMARY"
+        },
+        {
+          "FontSize": 16,
+          "Image": "imgs/secondary",
+          "Title": "SECONDARY"
+        }
+      ],
+      "Tooltip": "Switch between the primary and secondary microphone routes",
+      "UUID": "com.2sbsi.audio-switch.toggle-mic"
+    }
+  ],
+  "Author": "2sbsi",
+  "Category": "Audio Switch",
+  "CodePath": "audio-switch.exe",
+  "Description": "Switch Audio Switch microphone routes and show the active route.",
+  "Icon": "imgs/plugin",
+  "Name": "Audio Switch",
+  "OS": [
+    {
+      "MinimumVersion": "10",
+      "Platform": "windows"
+    }
+  ],
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "Version": "0.1.0.0",
+  "UUID": "com.2sbsi.audio-switch"
+}
