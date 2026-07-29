@@ -9,7 +9,6 @@ use audio_switch_core::audio::{AudioBackend, EndpointFlow, WasapiBackend};
 use audio_switch_core::ipc::ControlCommand;
 use audio_switch_core::{ActiveMic, AppConfig, ConfigStore};
 
-#[cfg(not(debug_assertions))]
 mod autostart;
 mod local_control;
 mod settings;
@@ -18,6 +17,14 @@ mod tray;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--elevated-autostart") {
+        return autostart::launch_elevated(
+            &std::env::current_exe().context("locating the Audio Switch executable")?,
+        );
+    }
+    if args.iter().any(|arg| arg == "--high-priority") {
+        autostart::set_high_process_priority()?;
+    }
     if args.iter().any(|arg| arg == "--stream-deck-plugin") || args.iter().any(|arg| arg == "-port")
     {
         return stream_deck::run(&args);
@@ -70,6 +77,7 @@ fn run_tray_role(open_settings: bool) -> Result<()> {
     if std::env::var_os("AUDIO_SWITCH_SKIP_AUTOSTART").is_none() {
         autostart::reconcile(
             config.auto_start,
+            config.auto_start_elevated,
             &std::env::current_exe().context("locating the Audio Switch executable")?,
         )?;
     }

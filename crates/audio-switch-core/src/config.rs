@@ -86,6 +86,8 @@ pub struct AppConfig {
     pub hotkey: HotkeyConfig,
     pub audio: AudioConfig,
     pub auto_start: bool,
+    #[serde(default)]
+    pub auto_start_elevated: bool,
 }
 
 impl Default for AppConfig {
@@ -98,6 +100,7 @@ impl Default for AppConfig {
             hotkey: HotkeyConfig::default(),
             audio: AudioConfig::default(),
             auto_start: true,
+            auto_start_elevated: false,
         }
     }
 }
@@ -195,6 +198,7 @@ mod tests {
         assert_eq!(config.hotkey.modifiers, ["control", "shift"]);
         assert_eq!(config.hotkey.key, "F11");
         assert!(config.auto_start);
+        assert!(!config.auto_start_elevated);
         assert!(config.audio.cue_enabled);
     }
 
@@ -210,5 +214,15 @@ mod tests {
 
         store.save(&expected).unwrap();
         assert_eq!(store.load_or_default().unwrap(), expected);
+    }
+
+    #[test]
+    fn loads_settings_created_before_elevated_autostart_was_added() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("autoStartElevated");
+
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+
+        assert!(!config.auto_start_elevated);
     }
 }

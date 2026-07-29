@@ -280,6 +280,7 @@ fn apply_settings(config: AppConfig) -> Result<()> {
     #[cfg(not(debug_assertions))]
     crate::autostart::reconcile(
         config.auto_start,
+        config.auto_start_elevated,
         &std::env::current_exe().context("locating Audio Switch executable")?,
     )?;
     Ok(())

@@ -25,6 +25,7 @@ const ID_SECONDARY_CAPTURE: usize = 203;
 const ID_VIRTUAL_RENDER: usize = 204;
 const ID_CUES: usize = 300;
 const ID_AUTOSTART: usize = 301;
+const ID_AUTOSTART_ELEVATED: usize = 302;
 const ID_SAVE: usize = 400;
 const ID_CANCEL: usize = 401;
 
@@ -46,6 +47,7 @@ struct SettingsContext {
     virtual_render: ComboBinding,
     cue_enabled: HWND,
     auto_start: HWND,
+    auto_start_elevated: HWND,
     config: AppConfig,
     save: SaveCallback,
 }
@@ -90,7 +92,7 @@ pub fn open(
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             620,
-            445,
+            480,
             Some(owner),
             None,
             Some(instance),
@@ -194,8 +196,17 @@ pub fn open(
         "Start at Windows sign-in",
         config.auto_start,
     )?;
-    button(window, instance, ID_SAVE, 390, 352, 92, "Save")?;
-    button(window, instance, ID_CANCEL, 493, 352, 92, "Cancel")?;
+    let auto_start_elevated = checkbox(
+        window,
+        instance,
+        ID_AUTOSTART_ELEVATED,
+        310,
+        338,
+        "Require UAC prompt and high priority",
+        config.auto_start_elevated,
+    )?;
+    button(window, instance, ID_SAVE, 390, 388, 92, "Save")?;
+    button(window, instance, ID_CANCEL, 493, 388, 92, "Cancel")?;
 
     *storage.lock().expect("settings mutex poisoned") = Some(SettingsContext {
         window,
@@ -208,6 +219,7 @@ pub fn open(
         virtual_render,
         cue_enabled,
         auto_start,
+        auto_start_elevated,
         config,
         save,
     });
@@ -269,6 +281,7 @@ fn save_settings() -> Result<()> {
     config.endpoints.virtual_render = selection(&context.virtual_render);
     config.audio.cue_enabled = checked(context.cue_enabled);
     config.auto_start = checked(context.auto_start);
+    config.auto_start_elevated = checked(context.auto_start_elevated);
     (context.save)(config)
 }
 

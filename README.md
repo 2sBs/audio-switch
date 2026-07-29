@@ -39,6 +39,11 @@ Left-click the tray icon or press `Ctrl+Shift+F11` to switch. Right-click it for
 an explicit route choice, settings, and route status. Settings are saved under
 `%LOCALAPPDATA%\AudioSwitch\settings.json`.
 
+Windows sign-in startup can optionally request UAC elevation and run Audio
+Switch at high process priority. When enabled, accept the UAC prompt at each
+sign-in to start the app. The existing non-elevated startup mode remains the
+default; enable the UAC/high-priority option separately in Settings.
+
 ## Build
 
 ```powershell
