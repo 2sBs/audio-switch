@@ -57,6 +57,12 @@ To build and validate the native Stream Deck plugin package:
 .\scripts\package-stream-deck.ps1
 ```
 
+## Release
+
+Push a tag matching the Cargo workspace version, such as `v0.1.0`, to build a
+GitHub release. The release contains a versioned Windows executable, a versioned
+Stream Deck plugin installer, and SHA-256 checksums for both artifacts.
+
 The project targets `stable-x86_64-pc-windows-msvc`. A virtual audio cable or
 the planned Audio Switch virtual driver is required for stable microphone
 routing and is not redistributed with this project.
