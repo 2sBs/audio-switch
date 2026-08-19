@@ -5,14 +5,13 @@ use anyhow::{Context, Result};
 use std::thread;
 use std::time::Duration;
 
+use audio_switch::local_control;
 use audio_switch_core::audio::{AudioBackend, EndpointFlow, WasapiBackend};
 use audio_switch_core::ipc::ControlCommand;
 use audio_switch_core::{ActiveMic, AppConfig, ConfigStore};
 
 mod autostart;
-mod local_control;
 mod settings;
-mod stream_deck;
 mod tray;
 
 fn main() -> Result<()> {
@@ -24,10 +23,6 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--high-priority") {
         autostart::set_high_process_priority()?;
-    }
-    if args.iter().any(|arg| arg == "--stream-deck-plugin") || args.iter().any(|arg| arg == "-port")
-    {
-        return stream_deck::run(&args);
     }
     if args.iter().any(|arg| arg == "--list-devices") {
         return list_devices();
@@ -70,6 +65,9 @@ fn main() -> Result<()> {
 }
 
 fn run_tray_role(open_settings: bool) -> Result<()> {
+    let Some(instance) = tray::acquire_single_instance()? else {
+        return Ok(());
+    };
     let store = ConfigStore::for_current_user().context("locating user configuration")?;
     let config = store.load_or_default().context("loading configuration")?;
     let backend = backend_from_config(&config);
@@ -81,7 +79,7 @@ fn run_tray_role(open_settings: bool) -> Result<()> {
             &std::env::current_exe().context("locating the Audio Switch executable")?,
         )?;
     }
-    tray::run(backend, store, config, open_settings)
+    tray::run(backend, store, config, open_settings, instance)
 }
 
 fn list_devices() -> Result<()> {

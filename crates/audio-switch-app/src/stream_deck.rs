@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 use std::net::TcpStream;
-use std::process::Command;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -21,6 +19,13 @@ struct UiState {
     labels: DeviceLabels,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum TrayStatus {
+    Unknown,
+    Available(UiState),
+    Unavailable,
+}
+
 pub fn run(args: &[String]) -> Result<()> {
     let port = argument(args, "-port")?;
     let plugin_uuid = argument(args, "-pluginUUID")?;
@@ -38,14 +43,13 @@ pub fn run(args: &[String]) -> Result<()> {
     )?;
 
     let mut contexts = HashSet::new();
-    let mut last_state: Option<UiState> = None;
+    let mut tray_status = TrayStatus::Unknown;
     let mut last_poll = Instant::now() - Duration::from_secs(2);
-    let mut host_launch_attempted = false;
 
     loop {
         match socket.read() {
             Ok(Message::Text(text)) => {
-                handle_event(&mut socket, &mut contexts, &mut last_state, text.as_str())?;
+                handle_event(&mut socket, &mut contexts, &mut tray_status, text.as_str())?;
             }
             Ok(Message::Ping(payload)) => socket.send(Message::Pong(payload))?,
             Ok(Message::Close(_)) => break,
@@ -62,17 +66,20 @@ pub fn run(args: &[String]) -> Result<()> {
         if last_poll.elapsed() >= Duration::from_secs(1) {
             match request_state(ControlCommand::GetState { request_id: None }) {
                 Ok(state) => {
-                    host_launch_attempted = false;
-                    if last_state.as_ref() != Some(&state) {
+                    if tray_status != TrayStatus::Available(state.clone()) {
                         update_contexts(&mut socket, &contexts, &state)?;
-                        last_state = Some(state);
+                        tray_status = TrayStatus::Available(state);
                     }
                 }
-                Err(_) if !host_launch_attempted => {
-                    launch_tray_host()?;
-                    host_launch_attempted = true;
+                Err(error) => {
+                    if tray_status != TrayStatus::Unavailable {
+                        update_unavailable_contexts(&mut socket, &contexts)?;
+                        tray_status = TrayStatus::Unavailable;
+                        eprintln!(
+                            "Audio Switch tray is not running; Stream Deck controls are unavailable: {error:#}"
+                        );
+                    }
                 }
-                Err(_) => {}
             }
             last_poll = Instant::now();
         }
@@ -83,7 +90,7 @@ pub fn run(args: &[String]) -> Result<()> {
 fn handle_event(
     socket: &mut StreamDeckSocket,
     contexts: &mut HashSet<String>,
-    last_state: &mut Option<UiState>,
+    tray_status: &mut TrayStatus,
     text: &str,
 ) -> Result<()> {
     let event: Value = serde_json::from_str(text).context("decoding Stream Deck event")?;
@@ -100,8 +107,12 @@ fn handle_event(
         "willAppear" => {
             if let Some(context) = context {
                 contexts.insert(context);
-                if let Some(state) = last_state {
-                    update_contexts(socket, contexts, state)?;
+                match tray_status {
+                    TrayStatus::Available(state) => update_contexts(socket, contexts, state)?,
+                    TrayStatus::Unavailable => {
+                        update_unavailable_contexts(socket, contexts)?;
+                    }
+                    TrayStatus::Unknown => {}
                 }
             }
         }
@@ -118,12 +129,11 @@ fn handle_event(
                     if let Some(context) = context {
                         send_json(socket, &json!({ "event": "showOk", "context": context }))?;
                     }
-                    *last_state = Some(state);
+                    *tray_status = TrayStatus::Available(state);
                 }
                 Err(error) => {
-                    if let Some(context) = context {
-                        send_json(socket, &json!({ "event": "showAlert", "context": context }))?;
-                    }
+                    update_unavailable_contexts(socket, contexts)?;
+                    *tray_status = TrayStatus::Unavailable;
                     eprintln!("Audio Switch Stream Deck action failed: {error:#}");
                 }
             }
@@ -162,21 +172,25 @@ fn update_contexts(
     Ok(())
 }
 
+fn update_unavailable_contexts(
+    socket: &mut StreamDeckSocket,
+    contexts: &HashSet<String>,
+) -> Result<()> {
+    for context in contexts {
+        send_json(
+            socket,
+            &json!({ "event": "setTitle", "context": context, "payload": { "title": "START AUDIO\nSWITCH", "target": 0 } }),
+        )?;
+        send_json(socket, &json!({ "event": "showAlert", "context": context }))?;
+    }
+    Ok(())
+}
+
 fn request_state(command: ControlCommand) -> Result<UiState> {
     match local_control::send_command(&command)? {
         ControlMessage::State { state, labels, .. } => Ok(UiState { state, labels }),
         ControlMessage::Error { message, .. } => Err(anyhow!(message)),
     }
-}
-
-fn launch_tray_host() -> Result<()> {
-    let executable = std::env::current_exe().context("locating Audio Switch executable")?;
-    Command::new(executable)
-        .arg("--tray")
-        .spawn()
-        .context("starting the Audio Switch tray")?;
-    thread::sleep(Duration::from_millis(300));
-    Ok(())
 }
 
 fn send_json(socket: &mut StreamDeckSocket, value: &Value) -> Result<()> {
@@ -199,6 +213,7 @@ fn argument<'a>(args: &'a [String], name: &str) -> Result<&'a str> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn parses_stream_deck_arguments() {
@@ -213,7 +228,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let plugin = thread::spawn(move || {
             run(&[
-                "audio-switch.exe".into(),
+                "audio-switch-stream-deck.exe".into(),
                 "-port".into(),
                 port.to_string(),
                 "-pluginUUID".into(),
@@ -230,5 +245,31 @@ mod tests {
         assert_eq!(registration["uuid"], "com.2sbsi.audio-switch");
         socket.close(None).unwrap();
         plugin.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn unavailable_tray_sets_a_clear_key_title_and_alert() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let first: Value =
+                serde_json::from_str(socket.read().unwrap().into_text().unwrap().as_str()).unwrap();
+            let second: Value =
+                serde_json::from_str(socket.read().unwrap().into_text().unwrap().as_str()).unwrap();
+            (first, second)
+        });
+        let (mut socket, _) = connect(endpoint).unwrap();
+        let contexts = HashSet::from(["key-1".to_owned()]);
+
+        update_unavailable_contexts(&mut socket, &contexts).unwrap();
+
+        let (title, alert) = server.join().unwrap();
+        assert_eq!(title["event"], "setTitle");
+        assert_eq!(title["context"], "key-1");
+        assert_eq!(title["payload"]["title"], "START AUDIO\nSWITCH");
+        assert_eq!(alert["event"], "showAlert");
+        assert_eq!(alert["context"], "key-1");
     }
 }

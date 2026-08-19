@@ -39,6 +39,15 @@ Left-click the tray icon or press `Ctrl+Shift+F11` to switch. Right-click it for
 an explicit route choice, settings, and route status. Settings are saved under
 `%LOCALAPPDATA%\AudioSwitch\settings.json`.
 
+Only one tray-app instance can run per Windows session. Attempting a second
+launch displays an error instead of starting another set of audio routes.
+
+The Stream Deck plugin is a controller for the tray app over a session-scoped
+local named pipe. The tray app must already be running for Stream Deck controls
+to work; the plugin does not contain or launch another copy of the tray app.
+When the tray app is unavailable, the key displays `START AUDIO SWITCH` and an
+alert.
+
 Windows sign-in startup can optionally request UAC elevation and run Audio
 Switch at high process priority. When enabled, accept the UAC prompt at each
 sign-in to start the app. The existing non-elevated startup mode remains the
@@ -57,11 +66,15 @@ To build and validate the native Stream Deck plugin package:
 .\scripts\package-stream-deck.ps1
 ```
 
+The standalone app is built as `target\release\audio-switch.exe`; the plugin
+package contains only `audio-switch-stream-deck.exe` and its Stream Deck assets.
+
 ## Release
 
-Push a tag matching the Cargo workspace version, such as `v0.1.0`, to build a
-GitHub release. The release contains a versioned Windows executable, a versioned
-Stream Deck plugin installer, and SHA-256 checksums for both artifacts.
+Push a tag matching the Cargo workspace version, such as `v0.2.0`, to build a
+GitHub release. The release contains a versioned standalone Windows executable,
+a versioned controller-only Stream Deck plugin installer, and SHA-256 checksums
+for both artifacts.
 
 The project targets `stable-x86_64-pc-windows-msvc`. A virtual audio cable or
 the planned Audio Switch virtual driver is required for stable microphone

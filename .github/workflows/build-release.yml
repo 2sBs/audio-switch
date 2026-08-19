@@ -1,7 +1,13 @@
-name: Release
+name: Build and release
 
 on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -9,21 +15,21 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Build standalone app and Stream Deck plugin
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     defaults:
       run:
         shell: pwsh
 
     steps:
-      - name: Check out the tagged source
+      - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -39,40 +45,55 @@ jobs:
           npm install --global @elgato/cli@1.7.4
           streamdeck -v
 
-      - name: Verify release version
+      - name: Verify artifact versions
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_NAME: ${{ github.ref_name }}
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
-              throw "Release tags must use the form vMAJOR.MINOR.PATCH; got '$env:RELEASE_TAG'."
-          }
-
-          $releaseVersion = $Matches.version
           $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata.' }
 
           $application = $metadata.packages | Where-Object name -EQ 'audio-switch' | Select-Object -First 1
           if ($null -eq $application) { throw 'Could not find the audio-switch Cargo package.' }
-          if ($application.version -ne $releaseVersion) {
-              throw "Tag version $releaseVersion does not match Cargo version $($application.version)."
+          $releaseVersion = $application.version
+          $pluginVersion = "$releaseVersion.0"
+
+          $manifest = Get-Content -LiteralPath .\stream-deck\com.2sbsi.audio-switch.sdPlugin\manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.Version -ne $pluginVersion) {
+              throw "Stream Deck version $($manifest.Version) does not match Cargo version $pluginVersion."
+          }
+          if ($manifest.CodePath -ne 'audio-switch-stream-deck.exe') {
+              throw "The plugin must use the controller-only executable; found '$($manifest.CodePath)'."
           }
 
-          "RELEASE_TAG=$env:RELEASE_TAG" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($env:SOURCE_REF -like 'refs/tags/*') {
+              if ($env:SOURCE_NAME -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+                  throw "Release tags must use the form vMAJOR.MINOR.PATCH; got '$env:SOURCE_NAME'."
+              }
+              if ($Matches.version -ne $releaseVersion) {
+                  throw "Tag version $($Matches.version) does not match Cargo version $releaseVersion."
+              }
+          }
+
           "RELEASE_VERSION=$releaseVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PLUGIN_VERSION=$releaseVersion.0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PLUGIN_VERSION=$pluginVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Test workspace
-        run: cargo test --locked --workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked --workspace
+          cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Build release artifacts
         run: |
+          cargo build --locked --release --bin audio-switch
           .\scripts\package-stream-deck.ps1 -Version $env:PLUGIN_VERSION
 
           $executableName = "audio-switch-$env:RELEASE_VERSION-windows-x86_64.exe"
           Copy-Item -LiteralPath .\target\release\audio-switch.exe -Destination ".\dist\$executableName"
 
           $pluginName = "audio-switch-$env:RELEASE_VERSION.streamDeckPlugin"
-          Move-Item -LiteralPath .\dist\com.2sbsi.audio-switch.streamDeckPlugin -Destination ".\dist\$pluginName"
+          Move-Item -LiteralPath .\dist\com.2sbsi.audio-switch.streamDeckPlugin -Destination ".\dist\$pluginName" -Force
 
           Get-ChildItem -LiteralPath .\dist -File |
               Sort-Object Name |
@@ -82,9 +103,18 @@ jobs:
               } |
               Set-Content -LiteralPath .\dist\SHA256SUMS.txt -Encoding ascii
 
-      - name: Publish GitHub release
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: audio-switch-${{ env.RELEASE_VERSION }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish tagged GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $assets = Get-ChildItem -LiteralPath .\dist -File | ForEach-Object FullName
           gh release view $env:RELEASE_TAG *> $null

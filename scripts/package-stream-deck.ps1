@@ -14,6 +14,8 @@ if ($null -eq $cargo) {
 }
 $plugin = Join-Path $repository 'stream-deck\com.2sbsi.audio-switch.sdPlugin'
 $distribution = Join-Path $repository 'dist'
+$buildTarget = Join-Path $repository 'target\stream-deck-package'
+$manifestPath = Join-Path $plugin 'manifest.json'
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $metadata = & $cargoPath metadata --format-version 1 --no-deps | ConvertFrom-Json
@@ -26,10 +28,29 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "$Version.0"
 }
 
-& $cargoPath build --locked --release --workspace
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+if ($manifest.Category -and -not $manifest.CategoryIcon) {
+    throw 'Stream Deck manifests with Category must also define CategoryIcon.'
+}
+if ($manifest.CategoryIcon) {
+    foreach ($suffix in '', '@2x') {
+        $iconBase = Join-Path $plugin ($manifest.CategoryIcon + $suffix)
+        $iconExists = Test-Path -LiteralPath ($iconBase + '.png') -PathType Leaf
+        $iconExists = $iconExists -or (Test-Path -LiteralPath ($iconBase + '.svg') -PathType Leaf)
+        if (-not $iconExists) {
+            throw "Missing Stream Deck category icon: $($manifest.CategoryIcon)$suffix.(png|svg)"
+        }
+    }
+}
+
+& $cargoPath build --locked --release --bin audio-switch-stream-deck --target-dir $buildTarget
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
 
-Copy-Item -LiteralPath (Join-Path $repository 'target\release\audio-switch.exe') -Destination (Join-Path $plugin 'audio-switch.exe') -Force
+$legacyHost = Join-Path $plugin 'audio-switch.exe'
+if (Test-Path -LiteralPath $legacyHost) {
+    Remove-Item -LiteralPath $legacyHost -Force
+}
+Copy-Item -LiteralPath (Join-Path $buildTarget 'release\audio-switch-stream-deck.exe') -Destination (Join-Path $plugin 'audio-switch-stream-deck.exe') -Force
 & (Join-Path $PSScriptRoot 'render-plugin-icon.ps1')
 streamdeck validate $plugin --no-update-check
 if ($LASTEXITCODE -ne 0) { throw 'Stream Deck validation failed.' }

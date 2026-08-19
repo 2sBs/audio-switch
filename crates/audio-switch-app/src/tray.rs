@@ -6,8 +6,8 @@ use audio_switch_core::audio::{AudioBackend, WasapiBackend};
 use audio_switch_core::ipc::{ControlCommand, ControlMessage};
 use audio_switch_core::{ActiveMic, AppConfig, ConfigStore, RouteStatus, RoutingController};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT,
-    WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
+    POINT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -19,17 +19,19 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, HICON, IDI_APPLICATION,
-    IDI_WARNING, LoadIconW, MB_ICONINFORMATION, MB_OK, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG,
-    MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN,
+    AppendMenuW, CW_USEDEFAULT, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetMessageW, GetSystemMetrics, HICON, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
+    MB_SETFOREGROUND, MB_TOPMOST, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
+    PostQuitMessage, RegisterClassW, SM_CXSMICON, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
     WNDCLASSW,
 };
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
-use crate::{local_control, settings};
+use crate::settings;
+use audio_switch::local_control;
 
 const TRAY_ICON_ID: u32 = 1;
 const HOTKEY_ID: i32 = 1;
@@ -42,10 +44,54 @@ const MENU_SETTINGS: usize = 1003;
 const MENU_STATUS: usize = 1004;
 const MENU_EXIT: usize = 1099;
 
+const PRIMARY_ICON: &[u8] = include_bytes!("../assets/tray/primary.ico");
+const SECONDARY_ICON: &[u8] = include_bytes!("../assets/tray/secondary.ico");
+const WARNING_ICON: &[u8] = include_bytes!("../assets/tray/warning.ico");
+
 static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
 
 struct TrayContext {
     controller: RoutingController<WasapiBackend>,
+}
+
+pub(crate) struct SingleInstanceGuard(HANDLE);
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+pub(crate) fn acquire_single_instance() -> Result<Option<SingleInstanceGuard>> {
+    let instance = try_acquire_named_mutex(w!("Local\\AudioSwitch.Tray.v1"))?;
+    if instance.is_none() {
+        unsafe {
+            MessageBoxW(
+                None,
+                w!(
+                    "Audio Switch is already running in the notification area. Only one tray-app instance can run at a time. Close the existing tray app before starting another copy."
+                ),
+                w!("Audio Switch is already running"),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+            );
+        }
+    }
+    Ok(instance)
+}
+
+fn try_acquire_named_mutex(name: PCWSTR) -> Result<Option<SingleInstanceGuard>> {
+    let mutex =
+        unsafe { CreateMutexW(None, false, name) }.context("creating the single-instance mutex")?;
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            let _ = CloseHandle(mutex);
+        }
+        Ok(None)
+    } else {
+        Ok(Some(SingleInstanceGuard(mutex)))
+    }
 }
 
 pub fn run(
@@ -53,21 +99,16 @@ pub fn run(
     store: ConfigStore,
     config: AppConfig,
     show_settings: bool,
+    _instance: SingleInstanceGuard,
 ) -> Result<()> {
     let hotkey_enabled = config.hotkey.enabled;
-    let mutex = unsafe { CreateMutexW(None, true, w!("Local\\AudioSwitch.Tray.v1")) }
-        .context("creating the single-instance mutex")?;
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        unsafe { CloseHandle(mutex) }.ok();
-        return Ok(());
-    }
-
     let mut controller = RoutingController::new(backend, store, config);
     controller.start().context("starting audio routes")?;
     CONTEXT
         .set(Mutex::new(TrayContext { controller }))
         .map_err(|_| anyhow!("tray context was already initialized"))?;
-    local_control::start_server(handle_control_command);
+    local_control::start_server(handle_control_command)
+        .context("starting the local control server")?;
 
     let module = unsafe { GetModuleHandleW(None) }.context("getting application module")?;
     let instance = HINSTANCE(module.0);
@@ -78,7 +119,6 @@ pub fn run(
         ..Default::default()
     };
     if unsafe { RegisterClassW(&class) } == 0 {
-        unsafe { CloseHandle(mutex) }.ok();
         return Err(anyhow!("registering tray window class failed"));
     }
 
@@ -127,7 +167,6 @@ pub fn run(
         }
     }
 
-    unsafe { CloseHandle(mutex) }.ok();
     Ok(())
 }
 
@@ -379,7 +418,7 @@ fn show_menu(window: HWND) {
 }
 
 fn add_or_update_icon(window: HWND, add: bool) -> Result<()> {
-    let (tooltip, warning) = CONTEXT
+    let (tooltip, icon_bytes) = CONTEXT
         .get()
         .map(|context| {
             let context = context.lock().expect("tray mutex poisoned");
@@ -391,26 +430,79 @@ fn add_or_update_icon(window: HWND, add: bool) -> Result<()> {
                 ActiveMic::Primary => &labels.primary,
                 ActiveMic::Secondary => &labels.secondary,
             };
-            (format!("Audio Switch - {active_label} mic"), warning)
-        })
-        .unwrap_or_else(|| ("Audio Switch".into(), true));
-    let icon = unsafe {
-        LoadIconW(
-            None,
-            if warning {
-                IDI_WARNING
+            let icon_bytes = if warning {
+                WARNING_ICON
             } else {
-                IDI_APPLICATION
-            },
-        )
-    }
-    .context("loading tray icon")?;
+                match state.active_mic {
+                    ActiveMic::Primary => PRIMARY_ICON,
+                    ActiveMic::Secondary => SECONDARY_ICON,
+                }
+            };
+            (format!("Audio Switch - {active_label} mic"), icon_bytes)
+        })
+        .unwrap_or_else(|| ("Audio Switch".into(), WARNING_ICON));
+    let icon = load_tray_icon(icon_bytes)?;
     let data = icon_data(window, icon, &tooltip);
     let result = unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &data) };
+    unsafe { DestroyIcon(icon) }.ok();
     if !result.as_bool() {
         return Err(anyhow!("Windows rejected the tray icon operation"));
     }
     Ok(())
+}
+
+fn load_tray_icon(ico: &[u8]) -> Result<HICON> {
+    let desired_size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
+    let image = ico_image_for_size(ico, desired_size as u32)
+        .context("selecting the embedded tray icon size")?;
+    unsafe {
+        CreateIconFromResourceEx(
+            image,
+            true,
+            0x0003_0000,
+            desired_size,
+            desired_size,
+            LR_DEFAULTCOLOR,
+        )
+    }
+    .context("loading the embedded tray icon")
+}
+
+fn ico_image_for_size(ico: &[u8], desired_size: u32) -> Option<&[u8]> {
+    if ico.len() < 6 || ico[0..4] != [0, 0, 1, 0] {
+        return None;
+    }
+    let image_count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+    if ico.len() < 6 + image_count * 16 {
+        return None;
+    }
+
+    let mut best: Option<(u32, &[u8])> = None;
+    for index in 0..image_count {
+        let entry = 6 + index * 16;
+        let width = if ico[entry] == 0 {
+            256
+        } else {
+            ico[entry] as u32
+        };
+        let byte_count = u32::from_le_bytes(
+            ico[entry + 8..entry + 12]
+                .try_into()
+                .expect("ICO entry byte count has a fixed width"),
+        ) as usize;
+        let image_offset = u32::from_le_bytes(
+            ico[entry + 12..entry + 16]
+                .try_into()
+                .expect("ICO entry offset has a fixed width"),
+        ) as usize;
+        let image_end = image_offset.checked_add(byte_count)?;
+        let image = ico.get(image_offset..image_end)?;
+        let distance = width.abs_diff(desired_size);
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, image));
+        }
+    }
+    best.map(|(_, image)| image)
 }
 
 fn icon_data(window: HWND, icon: HICON, tooltip: &str) -> NOTIFYICONDATAW {
@@ -441,4 +533,49 @@ fn copy_wide(value: &str, destination: &mut [u16]) {
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    use super::*;
+
+    static NEXT_MUTEX_ID: AtomicUsize = AtomicUsize::new(1);
+
+    #[test]
+    fn named_mutex_allows_only_one_live_tray_instance() {
+        let id = NEXT_MUTEX_ID.fetch_add(1, Ordering::Relaxed);
+        let name = wide_null(&format!(
+            "Local\\AudioSwitch.Tray.Test.{}.{}",
+            std::process::id(),
+            id
+        ));
+        let name = PCWSTR(name.as_ptr());
+
+        let first = try_acquire_named_mutex(name).unwrap();
+        assert!(first.is_some());
+        assert!(try_acquire_named_mutex(name).unwrap().is_none());
+
+        drop(first);
+        assert!(try_acquire_named_mutex(name).unwrap().is_some());
+    }
+
+    #[test]
+    fn embedded_tray_icons_contain_common_windows_sizes() {
+        for icon in [PRIMARY_ICON, SECONDARY_ICON, WARNING_ICON] {
+            assert!(ico_image_for_size(icon, 16).is_some());
+            assert!(ico_image_for_size(icon, 24).is_some());
+            assert!(ico_image_for_size(icon, 32).is_some());
+        }
+    }
+
+    #[test]
+    fn windows_can_load_each_embedded_tray_icon() {
+        for icon_bytes in [PRIMARY_ICON, SECONDARY_ICON, WARNING_ICON] {
+            let icon = load_tray_icon(icon_bytes).expect("embedded icon should load");
+            unsafe { DestroyIcon(icon) }.expect("loaded icon should be released");
+        }
+    }
 }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, anyhow};
@@ -17,7 +18,9 @@ use windows::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     WaitNamedPipeW,
 };
-use windows::core::w;
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::core::PCWSTR;
 
 struct OwnedHandle(HANDLE);
 
@@ -29,19 +32,39 @@ impl Drop for OwnedHandle {
     }
 }
 
-pub fn start_server(handler: impl Fn(ControlCommand) -> ControlMessage + Send + Sync + 'static) {
+pub fn start_server(
+    handler: impl Fn(ControlCommand) -> ControlMessage + Send + Sync + 'static,
+) -> Result<()> {
     let handler = Arc::new(handler);
+    let pipe_name = control_pipe_name()?;
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name("audio-switch-control".into())
-        .spawn(move || server_loop(handler))
-        .expect("starting local control server");
+        .spawn(
+            move || match create_server_pipe(PCWSTR(pipe_name.as_ptr())) {
+                Ok(first_pipe) => {
+                    let _ = ready_tx.send(Ok(()));
+                    server_loop(handler, pipe_name, first_pipe);
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                }
+            },
+        )
+        .context("starting local control server")?;
+    ready_rx
+        .recv()
+        .context("waiting for the local control server to start")??;
+    Ok(())
 }
 
 pub fn send_command(command: &ControlCommand) -> Result<ControlMessage> {
-    let _ = unsafe { WaitNamedPipeW(w!(r"\\.\pipe\AudioSwitch.Control.v1"), 2_000) };
+    let pipe_name = control_pipe_name()?;
+    let pipe_name = PCWSTR(pipe_name.as_ptr());
+    let _ = unsafe { WaitNamedPipeW(pipe_name, 2_000) };
     let handle = unsafe {
         CreateFileW(
-            w!(r"\\.\pipe\AudioSwitch.Control.v1"),
+            pipe_name,
             GENERIC_READ.0 | GENERIC_WRITE.0,
             FILE_SHARE_MODE::default(),
             None,
@@ -57,27 +80,25 @@ pub fn send_command(command: &ControlCommand) -> Result<ControlMessage> {
     decode_message(&frame).context("decoding the tray response")
 }
 
-fn server_loop(handler: Arc<dyn Fn(ControlCommand) -> ControlMessage + Send + Sync>) {
+fn server_loop(
+    handler: Arc<dyn Fn(ControlCommand) -> ControlMessage + Send + Sync>,
+    pipe_name: Vec<u16>,
+    first_pipe: OwnedHandle,
+) {
+    let pipe_name = PCWSTR(pipe_name.as_ptr());
+    let mut pending_pipe = Some(first_pipe);
     loop {
-        let handle = unsafe {
-            CreateNamedPipeW(
-                w!(r"\\.\pipe\AudioSwitch.Control.v1"),
-                PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                PIPE_UNLIMITED_INSTANCES,
-                MAX_FRAME_BYTES as u32,
-                MAX_FRAME_BYTES as u32,
-                0,
-                None,
-            )
+        let handle = match pending_pipe
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| create_server_pipe(pipe_name))
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("Audio Switch control pipe creation failed: {error:#}");
+                return;
+            }
         };
-        if handle.is_invalid() {
-            eprintln!("Audio Switch control pipe creation failed: {}", unsafe {
-                GetLastError().0
-            });
-            return;
-        }
-        let handle = OwnedHandle(handle);
         let connected = match unsafe { ConnectNamedPipe(handle.0, None) } {
             Ok(()) => true,
             Err(_) => (unsafe { GetLastError() }) == ERROR_PIPE_CONNECTED,
@@ -92,6 +113,40 @@ fn server_loop(handler: Arc<dyn Fn(ControlCommand) -> ControlMessage + Send + Sy
             }
         }
     }
+}
+
+fn create_server_pipe(pipe_name: PCWSTR) -> Result<OwnedHandle> {
+    let handle = unsafe {
+        CreateNamedPipeW(
+            pipe_name,
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            MAX_FRAME_BYTES as u32,
+            MAX_FRAME_BYTES as u32,
+            0,
+            None,
+        )
+    };
+    if handle.is_invalid() {
+        return Err(anyhow!(
+            "Windows error {} creating the named pipe",
+            unsafe { GetLastError().0 }
+        ));
+    }
+    Ok(OwnedHandle(handle))
+}
+
+fn control_pipe_name() -> Result<Vec<u16>> {
+    let mut session_id = 0;
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session_id) }
+        .context("locating the current Windows session")?;
+    Ok(
+        format!(r"\\.\pipe\AudioSwitch.Control.v1.Session-{session_id}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect(),
+    )
 }
 
 fn serve_client(

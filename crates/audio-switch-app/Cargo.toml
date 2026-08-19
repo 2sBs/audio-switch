@@ -15,3 +15,7 @@ windows.workspace = true
 [[bin]]
 name = "audio-switch"
 path = "src/main.rs"
+
+[[bin]]
+name = "audio-switch-stream-deck"
+path = "src/bin/audio-switch-stream-deck.rs"

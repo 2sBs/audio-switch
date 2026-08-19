@@ -26,8 +26,9 @@
   ],
   "Author": "2sbsi",
   "Category": "Audio Switch",
-  "CodePath": "audio-switch.exe",
-  "Description": "Switch Audio Switch microphone routes and show the active route.",
+  "CategoryIcon": "imgs/category",
+  "CodePath": "audio-switch-stream-deck.exe",
+  "Description": "Control the running Audio Switch tray app and show the active route.",
   "Icon": "imgs/plugin",
   "Name": "Audio Switch",
   "OS": [
@@ -40,6 +41,6 @@
   "Software": {
     "MinimumVersion": "7.1"
   },
-  "Version": "0.1.0.0",
+  "Version": "0.2.0.0",
   "UUID": "com.2sbsi.audio-switch"
 }
