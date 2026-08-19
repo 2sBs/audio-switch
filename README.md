@@ -4,7 +4,7 @@ Audio Switch is a resource-light Windows tray utility that keeps applications on
 stable audio endpoints while mirroring playback and switching the physical mic
 behind a virtual microphone.
 
-The first version exposes device-neutral routes configured by the user:
+Audio Switch exposes device-neutral routes configured by the user:
 
 - Primary playback endpoint
 - Secondary mirrored playback endpoint
@@ -23,17 +23,24 @@ switch-cue synthesis.
 
 ## Run
 
-Start directly in the settings window on first use:
+On first launch, Audio Switch opens a guided setup for the virtual cable,
+playback devices, microphones, route verification, and startup preferences. If
+the configured virtual cable later becomes unavailable, the app offers to reopen
+setup without silently changing the saved route.
+
+Start directly in guided setup:
 
 ```powershell
-cargo run --release -- --settings
+cargo run --release -- --setup
 ```
 
-Choose the five endpoints and optionally rename Primary and Secondary. Playback
-is captured from Primary and mirrored to Secondary; the selected physical
-microphone is routed into the virtual render endpoint. Applications should keep
-using the virtual device's capture endpoint, so changing the physical route does
-not change the endpoint seen by a game.
+The virtual cable step links to the official VB-CABLE download page when a
+compatible endpoint is not detected. Audio Switch never downloads or
+redistributes the driver. Choose the five endpoints and optionally rename
+Primary and Secondary. Playback is captured from Primary and mirrored to
+Secondary; the selected physical microphone is routed into the virtual render
+endpoint. Applications should keep using the virtual device's capture endpoint,
+so changing the physical route does not change the endpoint seen by a game.
 
 Left-click the tray icon or press `Ctrl+Shift+F11` to switch. Right-click it for
 an explicit route choice, settings, and route status. Settings are saved under
@@ -66,15 +73,25 @@ To build and validate the native Stream Deck plugin package:
 .\scripts\package-stream-deck.ps1
 ```
 
+To build the per-user Windows installer with Inno Setup 6:
+
+```powershell
+.\scripts\package-installer.ps1 -Version 0.3.0
+```
+
+The installer installs only the standalone app under
+`%LOCALAPPDATA%\Programs\Audio Switch`. It preserves user settings during
+upgrades and uninstall, and launches the guided setup after a fresh install.
+
 The standalone app is built as `target\release\audio-switch.exe`; the plugin
 package contains only `audio-switch-stream-deck.exe` and its Stream Deck assets.
 
 ## Release
 
-Push a tag matching the Cargo workspace version, such as `v0.2.0`, to build a
+Push a tag matching the Cargo workspace version, such as `v0.3.0`, to build a
 GitHub release. The release contains a versioned standalone Windows executable,
-a versioned controller-only Stream Deck plugin installer, and SHA-256 checksums
-for both artifacts.
+a per-user Windows setup executable, a versioned controller-only Stream Deck
+plugin installer, and SHA-256 checksums for all artifacts.
 
 The project targets `stable-x86_64-pc-windows-msvc`. A virtual audio cable or
 the planned Audio Switch virtual driver is required for stable microphone

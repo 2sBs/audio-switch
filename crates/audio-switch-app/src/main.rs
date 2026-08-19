@@ -12,6 +12,7 @@ use audio_switch_core::{ActiveMic, AppConfig, ConfigStore};
 
 mod autostart;
 mod settings;
+mod setup;
 mod tray;
 
 fn main() -> Result<()> {
@@ -23,6 +24,15 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--high-priority") {
         autostart::set_high_process_priority()?;
+    }
+    if args.iter().any(|arg| arg == "--remove-autostart") {
+        #[cfg(not(debug_assertions))]
+        autostart::reconcile(
+            false,
+            false,
+            &std::env::current_exe().context("locating the Audio Switch executable")?,
+        )?;
+        return Ok(());
     }
     if args.iter().any(|arg| arg == "--list-devices") {
         return list_devices();
@@ -61,15 +71,50 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }
-    run_tray_role(args.iter().any(|argument| argument == "--settings"))
+    run_tray_role(
+        args.iter().any(|argument| argument == "--settings"),
+        args.iter().any(|argument| argument == "--setup"),
+    )
 }
 
-fn run_tray_role(open_settings: bool) -> Result<()> {
+fn run_tray_role(open_settings: bool, force_setup: bool) -> Result<()> {
     let Some(instance) = tray::acquire_single_instance()? else {
         return Ok(());
     };
     let store = ConfigStore::for_current_user().context("locating user configuration")?;
-    let config = store.load_or_default().context("loading configuration")?;
+    let first_run = !store.exists();
+    let mut config = store.load_or_default().context("loading configuration")?;
+    let mut endpoints = enumerate_endpoints().context("enumerating setup endpoints")?;
+
+    let mut repair_missing_cable = false;
+    if !force_setup && !first_run && setup::virtual_cable_missing(&config, &endpoints) {
+        // Give slow virtual-cable drivers a moment to register at sign-in before prompting.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        endpoints = enumerate_endpoints().context("re-enumerating setup endpoints")?;
+        repair_missing_cable = setup::virtual_cable_missing(&config, &endpoints)
+            && setup::prompt_for_missing_virtual_cable();
+    }
+
+    if force_setup || first_run || repair_missing_cable {
+        let Some(updated) = setup::run(config.clone(), endpoints, enumerate_endpoints)? else {
+            if first_run {
+                return Ok(());
+            }
+            return continue_tray(config, store, open_settings, instance);
+        };
+        store.save(&updated).context("saving initial setup")?;
+        config = updated;
+    }
+
+    continue_tray(config, store, open_settings, instance)
+}
+
+fn continue_tray(
+    config: AppConfig,
+    store: ConfigStore,
+    open_settings: bool,
+    instance: tray::SingleInstanceGuard,
+) -> Result<()> {
     let backend = backend_from_config(&config);
     #[cfg(not(debug_assertions))]
     if std::env::var_os("AUDIO_SWITCH_SKIP_AUTOSTART").is_none() {
@@ -80,6 +125,12 @@ fn run_tray_role(open_settings: bool) -> Result<()> {
         )?;
     }
     tray::run(backend, store, config, open_settings, instance)
+}
+
+fn enumerate_endpoints() -> Result<Vec<audio_switch_core::audio::Endpoint>> {
+    default_backend()
+        .enumerate_endpoints()
+        .context("enumerating WASAPI endpoints")
 }
 
 fn list_devices() -> Result<()> {

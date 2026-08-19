@@ -45,6 +45,9 @@ jobs:
           npm install --global @elgato/cli@1.7.4
           streamdeck -v
 
+      - name: Install Inno Setup
+        run: choco install innosetup --version=6.7.1 --yes --no-progress
+
       - name: Verify artifact versions
         env:
           SOURCE_REF: ${{ github.ref }}
@@ -88,6 +91,7 @@ jobs:
         run: |
           cargo build --locked --release --bin audio-switch
           .\scripts\package-stream-deck.ps1 -Version $env:PLUGIN_VERSION
+          .\scripts\package-installer.ps1 -Version $env:RELEASE_VERSION -SkipBuild
 
           $executableName = "audio-switch-$env:RELEASE_VERSION-windows-x86_64.exe"
           Copy-Item -LiteralPath .\target\release\audio-switch.exe -Destination ".\dist\$executableName"
