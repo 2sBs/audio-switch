@@ -140,6 +140,10 @@ impl ConfigStore {
         &self.path
     }
 
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
     pub fn load_or_default(&self) -> Result<AppConfig, ConfigError> {
         if !self.path.exists() {
             return Ok(AppConfig::default());
@@ -214,6 +218,16 @@ mod tests {
 
         store.save(&expected).unwrap();
         assert_eq!(store.load_or_default().unwrap(), expected);
+    }
+
+    #[test]
+    fn reports_whether_a_saved_configuration_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+
+        assert!(!store.exists());
+        store.save(&AppConfig::default()).unwrap();
+        assert!(store.exists());
     }
 
     #[test]
