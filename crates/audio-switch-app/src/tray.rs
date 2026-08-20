@@ -363,15 +363,15 @@ fn setup_is_active() -> bool {
 
 fn reset_and_run_setup(window: HWND) -> Result<()> {
     let endpoints = crate::enumerate_endpoints().context("enumerating setup endpoints")?;
-    let current_config = CONTEXT
-        .get()
-        .context("tray controller is unavailable")?
-        .lock()
-        .expect("tray mutex poisoned")
-        .controller
-        .config()
-        .clone();
-    set_setup_active(true);
+    let current_config = {
+        let mut context = CONTEXT
+            .get()
+            .context("tray controller is unavailable")?
+            .lock()
+            .expect("tray mutex poisoned");
+        context.setup_active = true;
+        context.controller.config().clone()
+    };
 
     let setup_result = setup::run(
         setup_defaults_preserving_hidden(&current_config),
