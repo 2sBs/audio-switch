@@ -189,6 +189,12 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
         };
     };
     let mut context = context.lock().expect("tray mutex poisoned");
+    if context.setup_active && control_command_changes_active_mic(&command) {
+        return ControlMessage::Error {
+            request_id,
+            message: "setup is in progress".into(),
+        };
+    }
     let result = match command {
         ControlCommand::GetState { .. } | ControlCommand::Subscribe { .. } => Ok(()),
         ControlCommand::ToggleMic { .. } => context.controller.toggle_mic(),
@@ -207,6 +213,13 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
             message: error.to_string(),
         },
     }
+}
+
+fn control_command_changes_active_mic(command: &ControlCommand) -> bool {
+    matches!(
+        command,
+        ControlCommand::ToggleMic { .. } | ControlCommand::SetActiveMic { .. }
+    )
 }
 
 unsafe extern "system" fn window_proc(
@@ -670,6 +683,25 @@ mod tests {
         assert_eq!(reset.audio.cue_level_db, -12.0);
         assert!(reset.audio.cue_enabled);
         assert!(reset.auto_start);
+    }
+
+    #[test]
+    fn setup_blocks_only_mutating_control_commands() {
+        assert!(control_command_changes_active_mic(
+            &ControlCommand::ToggleMic { request_id: None }
+        ));
+        assert!(control_command_changes_active_mic(
+            &ControlCommand::SetActiveMic {
+                request_id: None,
+                active_mic: ActiveMic::Primary,
+            }
+        ));
+        assert!(!control_command_changes_active_mic(
+            &ControlCommand::GetState { request_id: None }
+        ));
+        assert!(!control_command_changes_active_mic(
+            &ControlCommand::Subscribe { request_id: None }
+        ));
     }
 
     #[test]

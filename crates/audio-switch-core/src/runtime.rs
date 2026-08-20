@@ -117,8 +117,7 @@ impl<B: AudioBackend> RoutingController<B> {
 
     pub fn apply_config(&mut self, config: AppConfig) -> Result<(), ControllerError> {
         let microphone_changed = self.config.active_mic != config.active_mic
-            || self.config.endpoints.primary_capture != config.endpoints.primary_capture
-            || self.config.endpoints.secondary_capture != config.endpoints.secondary_capture
+            || active_capture(&self.config) != active_capture(&config)
             || self.config.endpoints.virtual_render != config.endpoints.virtual_render;
         let mirror_changed = self.config.endpoints.primary_render
             != config.endpoints.primary_render
@@ -241,6 +240,13 @@ impl<B: AudioBackend> RoutingController<B> {
 fn route_has_error(state: &AppState) -> bool {
     matches!(state.mic_status, RouteStatus::Error { .. })
         || matches!(state.mirror_status, RouteStatus::Error { .. })
+}
+
+fn active_capture(config: &AppConfig) -> Option<&str> {
+    match config.active_mic {
+        ActiveMic::Primary => config.endpoints.primary_capture.as_deref(),
+        ActiveMic::Secondary => config.endpoints.secondary_capture.as_deref(),
+    }
 }
 
 impl<B: AudioBackend> Drop for RoutingController<B> {
@@ -439,6 +445,27 @@ mod tests {
             *controller.backend().calls.lock().unwrap(),
             ["stop-mirror", "mirror:primary->new-secondary"]
         );
+        assert!(matches!(
+            controller.state().mic_status,
+            RouteStatus::Routing
+        ));
+    }
+
+    #[test]
+    fn changing_inactive_microphone_preserves_the_live_route() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+        let config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        let mut controller = RoutingController::new(backend, store, config.clone());
+        controller.start().unwrap();
+        controller.backend().calls.lock().unwrap().clear();
+
+        let mut updated = config;
+        updated.endpoints.secondary_capture = Some("new-secondary-mic".into());
+        controller.apply_config(updated).unwrap();
+
+        assert!(controller.backend().calls.lock().unwrap().is_empty());
         assert!(matches!(
             controller.state().mic_status,
             RouteStatus::Routing
