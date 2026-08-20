@@ -403,20 +403,12 @@ unsafe extern "system" fn window_proc(
                 ID_GENERAL => switch_page(SettingsPage::General),
                 ID_UPDATES => switch_page(SettingsPage::Updates),
                 ID_ABOUT => switch_page(SettingsPage::About),
-                ID_SAVE => {
-                    if current_page() == Some(SettingsPage::General) {
-                        match save_settings() {
-                            Ok(()) => unsafe {
-                                let _ = DestroyWindow(window);
-                            },
-                            Err(error) => show_error(window, &error.to_string()),
-                        }
-                    } else {
-                        unsafe {
-                            let _ = DestroyWindow(window);
-                        }
-                    }
-                }
+                ID_SAVE => match save_settings() {
+                    Ok(()) => unsafe {
+                        let _ = DestroyWindow(window);
+                    },
+                    Err(error) => show_error(window, &error.to_string()),
+                },
                 ID_CANCEL => unsafe {
                     let _ = DestroyWindow(window);
                 },
@@ -518,12 +510,6 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-fn current_page() -> Option<SettingsPage> {
-    SETTINGS
-        .get()
-        .and_then(|storage| storage.lock().ok()?.as_ref().map(|context| context.page))
-}
-
 fn switch_page(page: SettingsPage) {
     let Some(storage) = SETTINGS.get() else {
         return;
@@ -564,9 +550,9 @@ fn switch_page(page: SettingsPage) {
     }
     unsafe {
         let _ = ShowWindow(page_body, if general { SW_HIDE } else { SW_SHOW });
-        let _ = ShowWindow(cancel_button, if general { SW_SHOW } else { SW_HIDE });
+        let _ = ShowWindow(cancel_button, SW_SHOW);
     }
-    set_text(save_button, if general { "Save changes" } else { "Close" });
+    set_text(save_button, "Save changes");
     unsafe {
         let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(window), None, true);
     }
