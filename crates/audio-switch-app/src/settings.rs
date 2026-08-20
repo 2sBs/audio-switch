@@ -110,6 +110,7 @@ pub fn open(
     let black_brush = HBRUSH(unsafe { GetStockObject(BLACK_BRUSH) }.0);
     let class = WNDCLASSW {
         hInstance: instance,
+        hIcon: ui::app_icon(instance),
         lpszClassName: w!("AudioSwitch.SettingsWindow.v1"),
         lpfnWndProc: Some(window_proc),
         hbrBackground: black_brush,

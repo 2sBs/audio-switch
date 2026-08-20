@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::{settings, setup};
+use crate::{settings, setup, ui};
 use audio_switch::local_control;
 
 const TRAY_ICON_ID: u32 = 1;
@@ -118,6 +118,7 @@ pub fn run(
     let instance = HINSTANCE(module.0);
     let class = WNDCLASSW {
         hInstance: instance,
+        hIcon: ui::app_icon(instance),
         lpszClassName: w!("AudioSwitch.TrayWindow.v1"),
         lpfnWndProc: Some(window_proc),
         ..Default::default()
@@ -349,39 +350,56 @@ fn setup_is_active() -> bool {
 
 fn reset_and_run_setup(window: HWND) -> Result<()> {
     let endpoints = crate::enumerate_endpoints().context("enumerating setup endpoints")?;
-    if let Some(context) = CONTEXT.get() {
-        let mut context = context.lock().expect("tray mutex poisoned");
-        context.setup_active = true;
-    }
+    let current_config = CONTEXT
+        .get()
+        .context("tray controller is unavailable")?
+        .lock()
+        .expect("tray mutex poisoned")
+        .controller
+        .config()
+        .clone();
+    set_setup_active(true);
 
-    let setup_result = setup::run(AppConfig::default(), endpoints, crate::enumerate_endpoints);
+    let setup_result = setup::run(
+        setup_defaults_preserving_hidden(&current_config),
+        endpoints,
+        crate::enumerate_endpoints,
+    );
     match setup_result {
         Ok(Some(config)) => {
-            if let Err(error) = apply_settings(config) {
-                unsafe {
-                    let _ = DestroyWindow(window);
-                }
-                return Err(error);
-            }
-            if let Some(context) = CONTEXT.get() {
-                context.lock().expect("tray mutex poisoned").setup_active = false;
-            }
-            Ok(())
+            let result = apply_settings(config);
+            set_setup_active(false);
+            result
         }
         Ok(None) => {
-            if let Some(context) = CONTEXT.get() {
-                context.lock().expect("tray mutex poisoned").setup_active = false;
-            }
+            set_setup_active(false);
             open_settings(window);
             Ok(())
         }
         Err(error) => {
-            if let Some(context) = CONTEXT.get() {
-                context.lock().expect("tray mutex poisoned").setup_active = false;
-            }
+            set_setup_active(false);
             Err(error)
         }
     }
+}
+
+fn set_setup_active(active: bool) {
+    if let Some(context) = CONTEXT.get() {
+        context.lock().expect("tray mutex poisoned").setup_active = active;
+    }
+}
+
+fn setup_defaults_preserving_hidden(current: &AppConfig) -> AppConfig {
+    let mut config = AppConfig {
+        active_mic: current.active_mic,
+        hotkey: current.hotkey.clone(),
+        ..AppConfig::default()
+    };
+    config.audio.sample_rate = current.audio.sample_rate;
+    config.audio.mirror_buffer_ms = current.audio.mirror_buffer_ms;
+    config.audio.mic_buffer_ms = current.audio.mic_buffer_ms;
+    config.audio.cue_level_db = current.audio.cue_level_db;
+    config
 }
 
 fn show_status(window: HWND) {
@@ -625,6 +643,33 @@ mod tests {
             }),
             "Error: device is in use"
         );
+    }
+
+    #[test]
+    fn reset_setup_preserves_preferences_the_wizard_does_not_show() {
+        let mut current = AppConfig {
+            active_mic: ActiveMic::Secondary,
+            ..AppConfig::default()
+        };
+        current.hotkey.enabled = false;
+        current.hotkey.key = "F10".into();
+        current.audio.sample_rate = 44_100;
+        current.audio.mirror_buffer_ms = 47;
+        current.audio.mic_buffer_ms = 13;
+        current.audio.cue_level_db = -12.0;
+        current.audio.cue_enabled = false;
+        current.auto_start = false;
+
+        let reset = setup_defaults_preserving_hidden(&current);
+
+        assert_eq!(reset.active_mic, ActiveMic::Secondary);
+        assert_eq!(reset.hotkey, current.hotkey);
+        assert_eq!(reset.audio.sample_rate, 44_100);
+        assert_eq!(reset.audio.mirror_buffer_ms, 47);
+        assert_eq!(reset.audio.mic_buffer_ms, 13);
+        assert_eq!(reset.audio.cue_level_db, -12.0);
+        assert!(reset.audio.cue_enabled);
+        assert!(reset.auto_start);
     }
 
     #[test]

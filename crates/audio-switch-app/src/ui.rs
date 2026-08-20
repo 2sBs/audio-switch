@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 
 use anyhow::Result;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET,
@@ -14,7 +14,7 @@ use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED, SetWindowTheme,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowTextLengthW, GetWindowTextW, SendMessageW, WM_SETFONT,
+    GetWindowTextLengthW, GetWindowTextW, HICON, LoadIconW, SendMessageW, WM_SETFONT,
 };
 use windows::core::{PCWSTR, w};
 
@@ -27,6 +27,11 @@ pub const QUIET: COLORREF = COLORREF(0x0069_6969);
 pub const ACCENT: COLORREF = COLORREF(0x00b6_a5ff);
 pub const SUCCESS: COLORREF = COLORREF(0x0091_d369);
 pub const DANGER: COLORREF = COLORREF(0x0087_7fff);
+
+pub fn app_icon(instance: HINSTANCE) -> HICON {
+    unsafe { LoadIconW(Some(instance), PCWSTR(std::ptr::without_provenance(1))) }
+        .unwrap_or_default()
+}
 
 pub struct Theme {
     pub background: HBRUSH,

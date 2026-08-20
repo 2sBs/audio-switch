@@ -68,19 +68,16 @@ impl<B: AudioBackend> RoutingController<B> {
     pub fn refresh_endpoints(&mut self) -> Result<(), ControllerError> {
         let endpoints = self.backend.enumerate_endpoints()?;
         let now = Instant::now();
+        let had_route_error = route_has_error(self.machine.state());
         let mut transitions = self
             .machine
             .update_availability(self.availability(&endpoints));
-        if transitions.is_empty() && now >= self.next_error_retry {
+        let retry_attempted = transitions.is_empty() && now >= self.next_error_retry;
+        if retry_attempted {
             transitions = self.machine.retry_failed_routes();
         }
         self.execute(transitions);
-        if matches!(self.machine.state().mic_status, RouteStatus::Error { .. })
-            || matches!(
-                self.machine.state().mirror_status,
-                RouteStatus::Error { .. }
-            )
-        {
+        if route_has_error(self.machine.state()) && (!had_route_error || retry_attempted) {
             self.next_error_retry = now + ROUTE_ERROR_RETRY_INTERVAL;
         }
         Ok(())
@@ -241,6 +238,11 @@ impl<B: AudioBackend> RoutingController<B> {
     }
 }
 
+fn route_has_error(state: &AppState) -> bool {
+    matches!(state.mic_status, RouteStatus::Error { .. })
+        || matches!(state.mirror_status, RouteStatus::Error { .. })
+}
+
 impl<B: AudioBackend> Drop for RoutingController<B> {
     fn drop(&mut self) {
         self.stop();
@@ -258,6 +260,7 @@ mod tests {
     struct FakeBackend {
         calls: Mutex<Vec<String>>,
         endpoints: Mutex<Vec<Endpoint>>,
+        fail_microphone: Mutex<bool>,
     }
 
     impl FakeBackend {
@@ -277,6 +280,7 @@ mod tests {
                     endpoint(&config.endpoints.secondary_capture, EndpointFlow::Capture),
                     endpoint(&config.endpoints.virtual_render, EndpointFlow::Render),
                 ]),
+                fail_microphone: Mutex::new(false),
             }
         }
     }
@@ -309,6 +313,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("mic:{active:?}:{source}->{sink}"));
+            if *self.fail_microphone.lock().unwrap() {
+                return Err(AudioError::Backend("device is in use".into()));
+            }
             Ok(())
         }
 
@@ -436,5 +443,29 @@ mod tests {
             controller.state().mic_status,
             RouteStatus::Routing
         ));
+    }
+
+    #[test]
+    fn failed_route_retry_deadline_is_not_postponed_by_endpoint_polls() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+        let config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        let mut controller = RoutingController::new(backend, store, config);
+        controller.start().unwrap();
+        *controller.backend().fail_microphone.lock().unwrap() = true;
+        controller.machine.mic_failed("device is in use");
+        controller.next_error_retry = Instant::now() - Duration::from_secs(1);
+        controller.backend().calls.lock().unwrap().clear();
+
+        controller.refresh_endpoints().unwrap();
+        controller.refresh_endpoints().unwrap();
+
+        let calls = controller.backend().calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|call| call.starts_with("mic:")).count(),
+            1
+        );
+        assert!(controller.next_error_retry > Instant::now());
     }
 }
