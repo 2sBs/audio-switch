@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings;
+use crate::{settings, setup};
 use audio_switch::local_control;
 
 const TRAY_ICON_ID: u32 = 1;
@@ -52,6 +52,7 @@ static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
 
 struct TrayContext {
     controller: RoutingController<WasapiBackend>,
+    setup_active: bool,
 }
 
 pub(crate) struct SingleInstanceGuard(HANDLE);
@@ -105,7 +106,10 @@ pub fn run(
     let mut controller = RoutingController::new(backend, store, config);
     controller.start().context("starting audio routes")?;
     CONTEXT
-        .set(Mutex::new(TrayContext { controller }))
+        .set(Mutex::new(TrayContext {
+            controller,
+            setup_active: false,
+        }))
         .map_err(|_| anyhow!("tray context was already initialized"))?;
     local_control::start_server(handle_control_command)
         .context("starting the local control server")?;
@@ -211,16 +215,19 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
-        WM_HOTKEY => {
+        WM_HOTKEY if !setup_is_active() => {
             toggle(window);
             LRESULT(0)
         }
-        WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {
+        WM_TIMER if wparam.0 == REFRESH_TIMER_ID && !setup_is_active() => {
             refresh(window);
             LRESULT(0)
         }
         WM_COMMAND => {
             let command = wparam.0 & 0xffff;
+            if setup_is_active() && command != MENU_EXIT {
+                return LRESULT(0);
+            }
             match command {
                 MENU_PRIMARY => select(window, ActiveMic::Primary),
                 MENU_SECONDARY => select(window, ActiveMic::Secondary),
@@ -234,6 +241,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TRAY => {
+            if setup_is_active() {
+                return LRESULT(0);
+            }
             match lparam.0 as u32 {
                 WM_LBUTTONUP => toggle(window),
                 WM_RBUTTONUP => show_menu(window),
@@ -303,7 +313,13 @@ fn open_settings(window: HWND) {
         }
     };
     drop(context);
-    if let Err(error) = settings::open(window, config, endpoints, apply_settings) {
+    if let Err(error) = settings::open(
+        window,
+        config,
+        endpoints,
+        apply_settings,
+        reset_and_run_setup,
+    ) {
         eprintln!("Audio Switch settings failed: {error:#}");
     }
 }
@@ -325,21 +341,67 @@ fn apply_settings(config: AppConfig) -> Result<()> {
     Ok(())
 }
 
+fn setup_is_active() -> bool {
+    CONTEXT
+        .get()
+        .is_some_and(|context| context.lock().expect("tray mutex poisoned").setup_active)
+}
+
+fn reset_and_run_setup(window: HWND) -> Result<()> {
+    let endpoints = crate::enumerate_endpoints().context("enumerating setup endpoints")?;
+    if let Some(context) = CONTEXT.get() {
+        let mut context = context.lock().expect("tray mutex poisoned");
+        context.setup_active = true;
+    }
+
+    let setup_result = setup::run(AppConfig::default(), endpoints, crate::enumerate_endpoints);
+    match setup_result {
+        Ok(Some(config)) => {
+            if let Err(error) = apply_settings(config) {
+                unsafe {
+                    let _ = DestroyWindow(window);
+                }
+                return Err(error);
+            }
+            if let Some(context) = CONTEXT.get() {
+                context.lock().expect("tray mutex poisoned").setup_active = false;
+            }
+            Ok(())
+        }
+        Ok(None) => {
+            if let Some(context) = CONTEXT.get() {
+                context.lock().expect("tray mutex poisoned").setup_active = false;
+            }
+            open_settings(window);
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(context) = CONTEXT.get() {
+                context.lock().expect("tray mutex poisoned").setup_active = false;
+            }
+            Err(error)
+        }
+    }
+}
+
 fn show_status(window: HWND) {
     let Some(context) = CONTEXT.get() else {
         return;
     };
-    let context = context.lock().expect("tray mutex poisoned");
-    let state = context.controller.state();
-    let labels = &context.controller.config().labels;
-    let active_label = match state.active_mic {
-        ActiveMic::Primary => &labels.primary,
-        ActiveMic::Secondary => &labels.secondary,
+    let text = {
+        let context = context.lock().expect("tray mutex poisoned");
+        let state = context.controller.state();
+        let labels = &context.controller.config().labels;
+        let active_label = match state.active_mic {
+            ActiveMic::Primary => &labels.primary,
+            ActiveMic::Secondary => &labels.secondary,
+        };
+        format!(
+            "Active microphone: {active_label}\r\nMicrophone route: {}\r\nPlayback mirror: {}",
+            route_status_text(&state.mic_status),
+            route_status_text(&state.mirror_status)
+        )
     };
-    let text = format!(
-        "Active microphone: {active_label}\r\nMicrophone route: {:?}\r\nPlayback mirror: {:?}",
-        state.mic_status, state.mirror_status
-    );
     let wide = wide_null(&text);
     unsafe {
         MessageBoxW(
@@ -348,6 +410,16 @@ fn show_status(window: HWND) {
             w!("Audio Switch status"),
             MB_OK | MB_ICONINFORMATION,
         );
+    }
+}
+
+fn route_status_text(status: &RouteStatus) -> String {
+    match status {
+        RouteStatus::Stopped => "Stopped".into(),
+        RouteStatus::Starting => "Starting".into(),
+        RouteStatus::Routing => "Routing".into(),
+        RouteStatus::Waiting { reason } => format!("Waiting: {reason}"),
+        RouteStatus::Error { message } => format!("Error: {message}"),
     }
 }
 
@@ -543,6 +615,17 @@ mod tests {
     use super::*;
 
     static NEXT_MUTEX_ID: AtomicUsize = AtomicUsize::new(1);
+
+    #[test]
+    fn status_text_is_human_readable() {
+        assert_eq!(route_status_text(&RouteStatus::Routing), "Routing");
+        assert_eq!(
+            route_status_text(&RouteStatus::Error {
+                message: "device is in use".into()
+            }),
+            "Error: device is in use"
+        );
+    }
 
     #[test]
     fn named_mutex_allows_only_one_live_tray_instance() {

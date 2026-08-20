@@ -14,6 +14,7 @@ mod autostart;
 mod settings;
 mod setup;
 mod tray;
+mod ui;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

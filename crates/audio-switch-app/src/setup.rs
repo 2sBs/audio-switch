@@ -4,26 +4,28 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{Context, Result, anyhow};
 use audio_switch_core::AppConfig;
 use audio_switch_core::audio::{Endpoint, EndpointFlow};
-use windows::Win32::Foundation::{
-    COLORREF, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
-};
+use windows::Win32::Foundation::{GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BLACK_BRUSH, GetStockObject, HBRUSH, HDC, SetBkColor, SetTextColor,
+    BLACK_BRUSH, BeginPaint, EndPaint, FillRect, GetStockObject, HBRUSH, HDC, PAINTSTRUCT,
+    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
+use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_OWNERDRAW, CB_ADDSTRING, CB_GETCURSEL,
     CB_RESETCONTENT, CB_SETCURSEL, CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW,
-    DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetMessageW,
+    DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, GetClientRect, GetMessageW,
     GetWindowTextLengthW, GetWindowTextW, HMENU, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK,
     MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MSG, MessageBoxW, PostQuitMessage, RegisterClassW,
     SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
-    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_PAINT, WNDCLASSW, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
+
+use crate::ui::{self, ButtonStyle, Theme};
 
 pub const DRIVER_DOWNLOAD_URL: &str = "https://vb-audio.com/Cable/";
 
@@ -62,6 +64,7 @@ struct ComboBinding {
 
 struct SetupContext {
     step: usize,
+    rail_heading: HWND,
     step_labels: [HWND; STEP_COUNT],
     heading: HWND,
     description: HWND,
@@ -83,6 +86,18 @@ struct SetupContext {
     config: AppConfig,
     endpoints: Vec<Endpoint>,
     refresh: RefreshCallback,
+    theme: Theme,
+}
+
+struct ScreenUpdate {
+    visibility: Vec<(HWND, bool)>,
+    step_labels: Vec<(HWND, String)>,
+    heading: (HWND, &'static str),
+    description: (HWND, &'static str),
+    status: (HWND, String),
+    verification: Option<(HWND, String)>,
+    back: (HWND, bool),
+    next: (HWND, &'static str, bool),
 }
 
 // All setup-window access occurs on the thread running its Win32 message loop.
@@ -126,9 +141,7 @@ pub fn run(
         .expect("setup result mutex poisoned") = None;
 
     if config.endpoints.virtual_render.is_none()
-        && let Some(endpoint) = endpoints
-            .iter()
-            .find(|endpoint| recognized_virtual_cable(endpoint))
+        && let Some(endpoint) = preferred_virtual_cable(&endpoints)
     {
         config.endpoints.virtual_render = Some(endpoint.id.clone());
     }
@@ -165,6 +178,8 @@ pub fn run(
         )
     }
     .context("creating setup window")?;
+    ui::use_dark_title_bar(window);
+    let theme = Theme::new()?;
 
     let rail_heading = label(window, instance, 24, 28, 180, 34, "Set up Audio Switch")?;
     let step_labels = std::array::from_fn(|index| {
@@ -179,10 +194,9 @@ pub fn run(
         )
         .expect("creating setup step label")
     });
-    let divider = label(window, instance, 212, 0, 1, 540, "")?;
     let heading = label(window, instance, 242, 34, 550, 38, "")?;
     let description = label(window, instance, 242, 78, 550, 58, "")?;
-    let status = label(window, instance, 242, 146, 550, 38, "")?;
+    let status = label(window, instance, 255, 146, 537, 38, "")?;
 
     let virtual_label = label(
         window,
@@ -259,53 +273,53 @@ pub fn run(
         config.endpoints.secondary_render.as_deref(),
     )?;
 
-    let primary_name_label = label(window, instance, 242, 174, 150, 24, "Primary name")?;
+    let primary_name_label = label(window, instance, 242, 196, 150, 24, "Primary name")?;
     let primary_name = edit(
         window,
         instance,
         ID_PRIMARY_NAME,
         400,
-        170,
+        192,
         382,
         &config.labels.primary,
     )?;
-    let primary_capture_label = label(window, instance, 242, 234, 150, 24, "Primary microphone")?;
+    let primary_capture_label = label(window, instance, 242, 256, 150, 24, "Primary microphone")?;
     let primary_capture = combo(
         window,
         instance,
         ID_PRIMARY_CAPTURE,
         400,
-        230,
+        252,
         382,
         &endpoints,
         EndpointFlow::Capture,
         config.endpoints.primary_capture.as_deref(),
     )?;
-    let secondary_name_label = label(window, instance, 242, 304, 150, 24, "Secondary name")?;
+    let secondary_name_label = label(window, instance, 242, 326, 150, 24, "Secondary name")?;
     let secondary_name = edit(
         window,
         instance,
         ID_SECONDARY_NAME,
         400,
-        300,
+        322,
         382,
         &config.labels.secondary,
     )?;
     let secondary_capture_label =
-        label(window, instance, 242, 364, 150, 24, "Secondary microphone")?;
+        label(window, instance, 242, 386, 150, 24, "Secondary microphone")?;
     let secondary_capture = combo(
         window,
         instance,
         ID_SECONDARY_CAPTURE,
         400,
-        360,
+        382,
         382,
         &endpoints,
         EndpointFlow::Capture,
         config.endpoints.secondary_capture.as_deref(),
     )?;
 
-    let verification = label(window, instance, 242, 174, 540, 230, "")?;
+    let verification = label(window, instance, 242, 196, 540, 208, "")?;
     let refresh_verify = button(
         window,
         instance,
@@ -361,6 +375,35 @@ pub fn run(
     let next = button(window, instance, ID_NEXT, 600, 520, 96, "Continue", true)?;
     let cancel = button(window, instance, ID_CANCEL, 706, 520, 76, "Exit", false)?;
 
+    theme.set_semibold(rail_heading);
+    theme.set_heading(heading);
+    theme.set_small(description);
+    theme.set_small(status);
+    for step_label in step_labels {
+        theme.set_body(step_label);
+    }
+    for control in [
+        virtual_render.window,
+        primary_render.window,
+        secondary_render.window,
+        primary_capture.window,
+        secondary_capture.window,
+        primary_name,
+        secondary_name,
+        cue_enabled,
+        auto_start,
+        auto_start_elevated,
+        driver,
+        refresh_virtual,
+        refresh_verify,
+        back,
+        next,
+        cancel,
+    ] {
+        theme.set_body(control);
+        ui::use_dark_control(control);
+    }
+
     let step_controls = [
         vec![
             virtual_label,
@@ -391,6 +434,7 @@ pub fn run(
 
     *storage.lock().expect("setup mutex poisoned") = Some(SetupContext {
         step: 0,
+        rail_heading,
         step_labels,
         heading,
         description,
@@ -412,11 +456,9 @@ pub fn run(
         config,
         endpoints,
         refresh,
+        theme,
     });
 
-    let _ = rail_heading;
-    let _ = divider;
-    let _ = cancel;
     update_screen()?;
     unsafe {
         let _ = ShowWindow(window, SW_SHOW);
@@ -468,14 +510,100 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_DRAWITEM => {
+            let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+            if let Some(storage) = SETUP.get()
+                && let Some(context) = storage.lock().expect("setup mutex poisoned").as_ref()
+            {
+                let style = if item.CtlID as usize == ID_NEXT {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Standard
+                };
+                ui::draw_button(item, &context.theme, style);
+                return LRESULT(1);
+            }
+            LRESULT(0)
+        }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
             let device_context = HDC(wparam.0 as *mut c_void);
-            unsafe {
-                SetBkColor(device_context, COLORREF(0));
-                SetTextColor(device_context, COLORREF(0x00ff_ffff));
-                let brush = GetStockObject(BLACK_BRUSH);
-                LRESULT(brush.0 as isize)
+            let control = HWND(lparam.0 as *mut c_void);
+            if let Some(storage) = SETUP.get()
+                && let Some(context) = storage.lock().expect("setup mutex poisoned").as_ref()
+            {
+                let step_index = context
+                    .step_labels
+                    .iter()
+                    .position(|label| *label == control);
+                let rail_control = control == context.rail_heading || step_index.is_some();
+                let text = match step_index {
+                    Some(index) if index == context.step => ui::ACCENT,
+                    Some(index) if index < context.step => ui::MUTED,
+                    Some(_) => ui::QUIET,
+                    None if control == context.description => ui::MUTED,
+                    None if control == context.status => ui::SUCCESS,
+                    None => ui::TEXT,
+                };
+                let brush = if message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX {
+                    context.theme.control
+                } else if rail_control {
+                    context.theme.panel
+                } else {
+                    context.theme.background
+                };
+                unsafe {
+                    let _ = SetBkMode(device_context, TRANSPARENT);
+                    SetBkColor(device_context, ui::CONTROL);
+                    SetTextColor(device_context, text);
+                }
+                return LRESULT(brush.0 as isize);
             }
+            LRESULT(0)
+        }
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            let device_context = unsafe { BeginPaint(window, &mut paint) };
+            if let Some(storage) = SETUP.get()
+                && let Some(context) = storage.lock().expect("setup mutex poisoned").as_ref()
+            {
+                let mut client = RECT::default();
+                unsafe {
+                    let _ = GetClientRect(window, &mut client);
+                    let rail = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 213,
+                        bottom: client.bottom,
+                    };
+                    let divider = RECT {
+                        left: 212,
+                        top: 0,
+                        right: 213,
+                        bottom: client.bottom,
+                    };
+                    let marker_top = 90 + context.step as i32 * 42;
+                    let marker = RECT {
+                        left: 0,
+                        top: marker_top,
+                        right: 2,
+                        bottom: marker_top + 28,
+                    };
+                    let status = RECT {
+                        left: 242,
+                        top: 146,
+                        right: 244,
+                        bottom: 184,
+                    };
+                    let _ = FillRect(device_context, &rail, context.theme.panel);
+                    let _ = FillRect(device_context, &divider, context.theme.line);
+                    let _ = FillRect(device_context, &marker, context.theme.accent);
+                    let _ = FillRect(device_context, &status, context.theme.accent);
+                }
+            }
+            unsafe {
+                let _ = EndPaint(window, &paint);
+            }
+            LRESULT(0)
         }
         WM_CLOSE => {
             unsafe {
@@ -558,10 +686,7 @@ fn refresh_endpoints(window: HWND) {
         (context.refresh)().map(|endpoints| {
             context.endpoints = endpoints;
             if context.config.endpoints.virtual_render.is_none()
-                && let Some(endpoint) = context
-                    .endpoints
-                    .iter()
-                    .find(|endpoint| recognized_virtual_cable(endpoint))
+                && let Some(endpoint) = preferred_virtual_cable(&context.endpoints)
             {
                 context.config.endpoints.virtual_render = Some(endpoint.id.clone());
             }
@@ -582,88 +707,124 @@ fn refresh_endpoints(window: HWND) {
 
 fn update_screen() -> Result<()> {
     let storage = SETUP.get().context("setup storage is unavailable")?;
-    let mut storage = storage.lock().expect("setup mutex poisoned");
-    let context = storage.as_mut().context("setup window is unavailable")?;
-    capture_config(context);
+    let screen = {
+        let mut storage = storage.lock().expect("setup mutex poisoned");
+        let context = storage.as_mut().context("setup window is unavailable")?;
+        capture_config(context);
+        let step = context.step;
 
-    for (index, controls) in context.step_controls.iter().enumerate() {
-        for control in controls {
-            unsafe {
-                let _ = ShowWindow(
-                    *control,
-                    if index == context.step {
-                        SW_SHOW
-                    } else {
-                        SW_HIDE
-                    },
-                );
+        let visibility = context
+            .step_controls
+            .iter()
+            .enumerate()
+            .flat_map(|(index, controls)| {
+                controls
+                    .iter()
+                    .copied()
+                    .map(move |control| (control, index == step))
+            })
+            .collect();
+        let step_labels = context
+            .step_labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                let marker = if index < step {
+                    "✓"
+                } else if index == step {
+                    "●"
+                } else {
+                    "○"
+                };
+                (*label, format!("{marker}  {}", STEP_TITLES[index]))
+            })
+            .collect();
+
+        let (heading, description, status, verification) = match step {
+            0 => (
+                "Connect a virtual audio cable",
+                "Audio Switch keeps one stable microphone in games and calls while changing the physical source behind it.",
+                virtual_status(context),
+                None,
+            ),
+            1 => (
+                "Choose playback devices",
+                "Audio from Primary is mirrored to Secondary while both endpoints are available.",
+                selection_status(
+                    &context.config.endpoints.primary_render,
+                    &context.config.endpoints.secondary_render,
+                    "Select both playback endpoints.",
+                ),
+                None,
+            ),
+            2 => (
+                "Choose microphones",
+                "Primary and Secondary are editable roles. Audio Switch never depends on a physical device name.",
+                selection_status(
+                    &context.config.endpoints.primary_capture,
+                    &context.config.endpoints.secondary_capture,
+                    "Select both microphone endpoints.",
+                ),
+                None,
+            ),
+            3 => {
+                let status = match validate_configuration(&context.config, &context.endpoints) {
+                    Ok(()) => "All five endpoints are online and ready.".to_owned(),
+                    Err(message) => message,
+                };
+                (
+                    "Verify the audio route",
+                    "Review the selected endpoints. Refresh after connecting or enabling a device.",
+                    status,
+                    Some((context.verification, verification_summary(context))),
+                )
             }
-        }
-    }
-    for (index, label) in context.step_labels.iter().enumerate() {
-        let marker = if index == context.step { ">" } else { " " };
-        set_text(
-            *label,
-            &format!("{marker} {}  {}", index + 1, STEP_TITLES[index]),
-        );
-    }
+            _ => (
+                "Choose startup behavior",
+                "These preferences can be changed later from the tray settings window.",
+                "Setup is ready to save.".to_owned(),
+                None,
+            ),
+        };
 
-    let (heading, description, status) = match context.step {
-        0 => (
-            "Connect a virtual audio cable",
-            "Audio Switch keeps one stable microphone in games and calls while changing the physical source behind it.",
-            virtual_status(context),
-        ),
-        1 => (
-            "Choose playback devices",
-            "Audio from Primary is mirrored to Secondary while both endpoints are available.",
-            selection_status(
-                &context.config.endpoints.primary_render,
-                &context.config.endpoints.secondary_render,
-                "Select both playback endpoints.",
+        ScreenUpdate {
+            visibility,
+            step_labels,
+            heading: (context.heading, heading),
+            description: (context.description, description),
+            status: (context.status, status),
+            verification,
+            back: (context.back, step > 0),
+            next: (
+                context.next,
+                if step + 1 == STEP_COUNT {
+                    "Finish"
+                } else {
+                    "Continue"
+                },
+                step_validation(context).is_ok(),
             ),
-        ),
-        2 => (
-            "Choose microphones",
-            "Primary and Secondary are editable roles. Audio Switch never depends on a physical device name.",
-            selection_status(
-                &context.config.endpoints.primary_capture,
-                &context.config.endpoints.secondary_capture,
-                "Select both microphone endpoints.",
-            ),
-        ),
-        3 => {
-            set_text(context.verification, &verification_summary(context));
-            let status = match validate_configuration(&context.config, &context.endpoints) {
-                Ok(()) => "All five endpoints are online and ready.".to_owned(),
-                Err(message) => message,
-            };
-            (
-                "Verify the audio route",
-                "Review the selected endpoints. Refresh after connecting or enabling a device.",
-                status,
-            )
         }
-        _ => (
-            "Choose startup behavior",
-            "These preferences can be changed later from the tray settings window.",
-            "Setup is ready to save.".to_owned(),
-        ),
     };
-    set_text(context.heading, heading);
-    set_text(context.description, description);
-    set_text(context.status, &status);
-    set_text(
-        context.next,
-        if context.step + 1 == STEP_COUNT {
-            "Finish"
-        } else {
-            "Continue"
-        },
-    );
+
+    for (control, visible) in screen.visibility {
+        unsafe {
+            let _ = ShowWindow(control, if visible { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    for (label, text) in screen.step_labels {
+        set_text(label, &text);
+    }
+    if let Some((verification, text)) = screen.verification {
+        set_text(verification, &text);
+    }
+    set_text(screen.heading.0, screen.heading.1);
+    set_text(screen.description.0, screen.description.1);
+    set_text(screen.status.0, &screen.status.1);
+    set_text(screen.next.0, screen.next.1);
     unsafe {
-        let _ = EnableWindow(context.back, context.step > 0);
-        let _ = EnableWindow(context.next, step_validation(context).is_ok());
+        let _ = EnableWindow(screen.back.0, screen.back.1);
+        let _ = EnableWindow(screen.next.0, screen.next.2);
     }
     Ok(())
 }
@@ -781,6 +942,16 @@ fn recognized_virtual_cable(endpoint: &Endpoint) -> bool {
     name.contains("cable input")
         || (name.contains("vb-audio") && name.contains("cable"))
         || name.contains("virtual audio cable")
+}
+
+fn preferred_virtual_cable(endpoints: &[Endpoint]) -> Option<&Endpoint> {
+    endpoints
+        .iter()
+        .filter(|endpoint| recognized_virtual_cable(endpoint))
+        .min_by_key(|endpoint| {
+            let name = endpoint.name.to_ascii_lowercase();
+            usize::from(!name.starts_with("cable input"))
+        })
 }
 
 fn virtual_status(context: &SetupContext) -> String {
@@ -1065,10 +1236,8 @@ fn button(
     primary: bool,
 ) -> Result<HWND> {
     let value = wide_null(value);
-    let mut style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
-    if primary {
-        style |= WINDOW_STYLE(BS_DEFPUSHBUTTON as u32);
-    }
+    let _ = primary;
+    let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32);
     control(
         parent,
         instance,
@@ -1245,6 +1414,29 @@ mod tests {
 
         let physical = endpoint("speaker-id", "USB Speakers", EndpointFlow::Render, true);
         assert!(!recognized_virtual_cable(&physical));
+    }
+
+    #[test]
+    fn standard_cable_input_wins_over_the_16_channel_endpoint() {
+        let endpoints = [
+            endpoint(
+                "cable-16ch",
+                "CABLE In 16ch (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+            endpoint(
+                "cable-input",
+                "CABLE Input (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+        ];
+
+        assert_eq!(
+            preferred_virtual_cable(&endpoints).map(|endpoint| endpoint.id.as_str()),
+            Some("cable-input")
+        );
     }
 
     #[test]

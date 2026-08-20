@@ -120,6 +120,15 @@ impl RoutingStateMachine {
         self.reconcile(false)
     }
 
+    pub fn retry_failed_routes(&mut self) -> Vec<DesiredTransition> {
+        if !matches!(self.state.mic_status, RouteStatus::Error { .. })
+            && !matches!(self.state.mirror_status, RouteStatus::Error { .. })
+        {
+            return Vec::new();
+        }
+        self.reconcile(false)
+    }
+
     pub fn mic_started(&mut self) {
         self.state.mic_status = RouteStatus::Routing;
         self.bump_revision();
@@ -266,6 +275,23 @@ mod tests {
                 DesiredTransition::StartMirror
             ]
         );
+    }
+
+    #[test]
+    fn failed_route_can_be_retried_without_an_availability_change() {
+        let mut machine = RoutingStateMachine::new(ActiveMic::Secondary, all_available());
+        machine.mic_started();
+        machine.mirror_started();
+        machine.mic_failed("device is in use");
+
+        assert_eq!(
+            machine.retry_failed_routes(),
+            [DesiredTransition::StartMic(ActiveMic::Secondary)]
+        );
+        assert!(matches!(
+            machine.state().mirror_status,
+            RouteStatus::Routing
+        ));
     }
 
     #[test]

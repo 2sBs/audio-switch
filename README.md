@@ -46,6 +46,12 @@ Left-click the tray icon or press `Ctrl+Shift+F11` to switch. Right-click it for
 an explicit route choice, settings, and route status. Settings are saved under
 `%LOCALAPPDATA%\AudioSwitch\settings.json`.
 
+The native settings window keeps device roles, routing, cues, and startup under
+General. Updates is reserved for the planned updater, and About reports the app
+version. General can restart guided setup with fresh defaults after a
+confirmation. The current configuration and audio routing remain active until
+setup finishes, and cancelling returns to Settings without changing either.
+
 Only one tray-app instance can run per Windows session. Attempting a second
 launch displays an error instead of starting another set of audio routes.
 
@@ -76,7 +82,7 @@ To build and validate the native Stream Deck plugin package:
 To build the per-user Windows installer with Inno Setup 6:
 
 ```powershell
-.\scripts\package-installer.ps1 -Version 0.3.0
+.\scripts\package-installer.ps1 -Version 0.4.0
 ```
 
 The installer installs only the standalone app under
@@ -88,7 +94,7 @@ package contains only `audio-switch-stream-deck.exe` and its Stream Deck assets.
 
 ## Release
 
-Push a tag matching the Cargo workspace version, such as `v0.3.0`, to build a
+Push a tag matching the Cargo workspace version, such as `v0.4.0`, to build a
 GitHub release. The release contains a versioned standalone Windows executable,
 a per-user Windows setup executable, a versioned controller-only Stream Deck
 plugin installer, and SHA-256 checksums for all artifacts.
