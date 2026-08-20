@@ -30,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings;
+use crate::{settings, setup, ui};
 use audio_switch::local_control;
 
 const TRAY_ICON_ID: u32 = 1;
@@ -52,6 +52,7 @@ static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
 
 struct TrayContext {
     controller: RoutingController<WasapiBackend>,
+    setup_active: bool,
 }
 
 pub(crate) struct SingleInstanceGuard(HANDLE);
@@ -105,7 +106,10 @@ pub fn run(
     let mut controller = RoutingController::new(backend, store, config);
     controller.start().context("starting audio routes")?;
     CONTEXT
-        .set(Mutex::new(TrayContext { controller }))
+        .set(Mutex::new(TrayContext {
+            controller,
+            setup_active: false,
+        }))
         .map_err(|_| anyhow!("tray context was already initialized"))?;
     local_control::start_server(handle_control_command)
         .context("starting the local control server")?;
@@ -114,6 +118,7 @@ pub fn run(
     let instance = HINSTANCE(module.0);
     let class = WNDCLASSW {
         hInstance: instance,
+        hIcon: ui::app_icon(instance),
         lpszClassName: w!("AudioSwitch.TrayWindow.v1"),
         lpfnWndProc: Some(window_proc),
         ..Default::default()
@@ -184,6 +189,12 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
         };
     };
     let mut context = context.lock().expect("tray mutex poisoned");
+    if context.setup_active && control_command_changes_active_mic(&command) {
+        return ControlMessage::Error {
+            request_id,
+            message: "setup is in progress".into(),
+        };
+    }
     let result = match command {
         ControlCommand::GetState { .. } | ControlCommand::Subscribe { .. } => Ok(()),
         ControlCommand::ToggleMic { .. } => context.controller.toggle_mic(),
@@ -204,6 +215,13 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
     }
 }
 
+fn control_command_changes_active_mic(command: &ControlCommand) -> bool {
+    matches!(
+        command,
+        ControlCommand::ToggleMic { .. } | ControlCommand::SetActiveMic { .. }
+    )
+}
+
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -211,16 +229,19 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
-        WM_HOTKEY => {
+        WM_HOTKEY if !setup_is_active() => {
             toggle(window);
             LRESULT(0)
         }
-        WM_TIMER if wparam.0 == REFRESH_TIMER_ID => {
+        WM_TIMER if wparam.0 == REFRESH_TIMER_ID && !setup_is_active() => {
             refresh(window);
             LRESULT(0)
         }
         WM_COMMAND => {
             let command = wparam.0 & 0xffff;
+            if setup_is_active() && command != MENU_EXIT {
+                return LRESULT(0);
+            }
             match command {
                 MENU_PRIMARY => select(window, ActiveMic::Primary),
                 MENU_SECONDARY => select(window, ActiveMic::Secondary),
@@ -234,6 +255,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TRAY => {
+            if setup_is_active() {
+                return LRESULT(0);
+            }
             match lparam.0 as u32 {
                 WM_LBUTTONUP => toggle(window),
                 WM_RBUTTONUP => show_menu(window),
@@ -303,7 +327,13 @@ fn open_settings(window: HWND) {
         }
     };
     drop(context);
-    if let Err(error) = settings::open(window, config, endpoints, apply_settings) {
+    if let Err(error) = settings::open(
+        window,
+        config,
+        endpoints,
+        apply_settings,
+        reset_and_run_setup,
+    ) {
         eprintln!("Audio Switch settings failed: {error:#}");
     }
 }
@@ -325,21 +355,84 @@ fn apply_settings(config: AppConfig) -> Result<()> {
     Ok(())
 }
 
+fn setup_is_active() -> bool {
+    CONTEXT
+        .get()
+        .is_some_and(|context| context.lock().expect("tray mutex poisoned").setup_active)
+}
+
+fn reset_and_run_setup(window: HWND) -> Result<()> {
+    let endpoints = crate::enumerate_endpoints().context("enumerating setup endpoints")?;
+    let current_config = {
+        let mut context = CONTEXT
+            .get()
+            .context("tray controller is unavailable")?
+            .lock()
+            .expect("tray mutex poisoned");
+        context.setup_active = true;
+        context.controller.config().clone()
+    };
+
+    let setup_result = setup::run(
+        setup_defaults_preserving_hidden(&current_config),
+        endpoints,
+        crate::enumerate_endpoints,
+    );
+    match setup_result {
+        Ok(Some(config)) => {
+            let result = apply_settings(config);
+            set_setup_active(false);
+            result
+        }
+        Ok(None) => {
+            set_setup_active(false);
+            open_settings(window);
+            Ok(())
+        }
+        Err(error) => {
+            set_setup_active(false);
+            Err(error)
+        }
+    }
+}
+
+fn set_setup_active(active: bool) {
+    if let Some(context) = CONTEXT.get() {
+        context.lock().expect("tray mutex poisoned").setup_active = active;
+    }
+}
+
+fn setup_defaults_preserving_hidden(current: &AppConfig) -> AppConfig {
+    let mut config = AppConfig {
+        active_mic: current.active_mic,
+        hotkey: current.hotkey.clone(),
+        ..AppConfig::default()
+    };
+    config.audio.sample_rate = current.audio.sample_rate;
+    config.audio.mirror_buffer_ms = current.audio.mirror_buffer_ms;
+    config.audio.mic_buffer_ms = current.audio.mic_buffer_ms;
+    config.audio.cue_level_db = current.audio.cue_level_db;
+    config
+}
+
 fn show_status(window: HWND) {
     let Some(context) = CONTEXT.get() else {
         return;
     };
-    let context = context.lock().expect("tray mutex poisoned");
-    let state = context.controller.state();
-    let labels = &context.controller.config().labels;
-    let active_label = match state.active_mic {
-        ActiveMic::Primary => &labels.primary,
-        ActiveMic::Secondary => &labels.secondary,
+    let text = {
+        let context = context.lock().expect("tray mutex poisoned");
+        let state = context.controller.state();
+        let labels = &context.controller.config().labels;
+        let active_label = match state.active_mic {
+            ActiveMic::Primary => &labels.primary,
+            ActiveMic::Secondary => &labels.secondary,
+        };
+        format!(
+            "Active microphone: {active_label}\r\nMicrophone route: {}\r\nPlayback mirror: {}",
+            route_status_text(&state.mic_status),
+            route_status_text(&state.mirror_status)
+        )
     };
-    let text = format!(
-        "Active microphone: {active_label}\r\nMicrophone route: {:?}\r\nPlayback mirror: {:?}",
-        state.mic_status, state.mirror_status
-    );
     let wide = wide_null(&text);
     unsafe {
         MessageBoxW(
@@ -348,6 +441,16 @@ fn show_status(window: HWND) {
             w!("Audio Switch status"),
             MB_OK | MB_ICONINFORMATION,
         );
+    }
+}
+
+fn route_status_text(status: &RouteStatus) -> String {
+    match status {
+        RouteStatus::Stopped => "Stopped".into(),
+        RouteStatus::Starting => "Starting".into(),
+        RouteStatus::Routing => "Routing".into(),
+        RouteStatus::Waiting { reason } => format!("Waiting: {reason}"),
+        RouteStatus::Error { message } => format!("Error: {message}"),
     }
 }
 
@@ -543,6 +646,63 @@ mod tests {
     use super::*;
 
     static NEXT_MUTEX_ID: AtomicUsize = AtomicUsize::new(1);
+
+    #[test]
+    fn status_text_is_human_readable() {
+        assert_eq!(route_status_text(&RouteStatus::Routing), "Routing");
+        assert_eq!(
+            route_status_text(&RouteStatus::Error {
+                message: "device is in use".into()
+            }),
+            "Error: device is in use"
+        );
+    }
+
+    #[test]
+    fn reset_setup_preserves_preferences_the_wizard_does_not_show() {
+        let mut current = AppConfig {
+            active_mic: ActiveMic::Secondary,
+            ..AppConfig::default()
+        };
+        current.hotkey.enabled = false;
+        current.hotkey.key = "F10".into();
+        current.audio.sample_rate = 44_100;
+        current.audio.mirror_buffer_ms = 47;
+        current.audio.mic_buffer_ms = 13;
+        current.audio.cue_level_db = -12.0;
+        current.audio.cue_enabled = false;
+        current.auto_start = false;
+
+        let reset = setup_defaults_preserving_hidden(&current);
+
+        assert_eq!(reset.active_mic, ActiveMic::Secondary);
+        assert_eq!(reset.hotkey, current.hotkey);
+        assert_eq!(reset.audio.sample_rate, 44_100);
+        assert_eq!(reset.audio.mirror_buffer_ms, 47);
+        assert_eq!(reset.audio.mic_buffer_ms, 13);
+        assert_eq!(reset.audio.cue_level_db, -12.0);
+        assert!(reset.audio.cue_enabled);
+        assert!(reset.auto_start);
+    }
+
+    #[test]
+    fn setup_blocks_only_mutating_control_commands() {
+        assert!(control_command_changes_active_mic(
+            &ControlCommand::ToggleMic { request_id: None }
+        ));
+        assert!(control_command_changes_active_mic(
+            &ControlCommand::SetActiveMic {
+                request_id: None,
+                active_mic: ActiveMic::Primary,
+            }
+        ));
+        assert!(!control_command_changes_active_mic(
+            &ControlCommand::GetState { request_id: None }
+        ));
+        assert!(!control_command_changes_active_mic(
+            &ControlCommand::Subscribe { request_id: None }
+        ));
+    }
 
     #[test]
     fn named_mutex_allows_only_one_live_tray_instance() {

@@ -162,7 +162,12 @@ impl WasapiBackend {
             Ok(Err(message)) => {
                 stop.store(true, Ordering::Release);
                 let _ = join.join();
-                Err(AudioError::Backend(message))
+                Err(AudioError::Backend(
+                    message
+                        .strip_prefix("audio backend failed: ")
+                        .unwrap_or(&message)
+                        .to_owned(),
+                ))
             }
             Err(error) => {
                 stop.store(true, Ordering::Release);
@@ -824,12 +829,30 @@ fn audio_backend_error(error: impl std::fmt::Display) -> AudioError {
 }
 
 fn stage_error(stage: &str, error: impl std::fmt::Display) -> AudioError {
-    AudioError::Backend(format!("{stage}: {error}"))
+    let message = error.to_string();
+    let detail = if message.contains("0x8889000A") {
+        "the audio device is in exclusive use by another application"
+    } else {
+        &message
+    };
+    AudioError::Backend(format!("{stage}: {detail}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_in_use_errors_explain_the_exclusive_lock() {
+        let error = stage_error(
+            "initialize shared render stream",
+            "Windows returned an error: 0x8889000A",
+        );
+        assert_eq!(
+            error.to_string(),
+            "audio backend failed: initialize shared render stream: the audio device is in exclusive use by another application"
+        );
+    }
 
     #[test]
     fn millisecond_conversion_never_returns_an_empty_buffer() {
