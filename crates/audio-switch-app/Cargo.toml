@@ -1,9 +1,12 @@
 [package]
 name = "audio-switch"
 version.workspace = true
+description = "Windows tray app and Stream Deck controller for Audio Switch"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
+publish = false
 build = "build.rs"
 
 [dependencies]

@@ -1,104 +1,127 @@
 # Audio Switch
 
-Audio Switch is a resource-light Windows tray utility that keeps applications on
-stable audio endpoints while mirroring playback and switching the physical mic
-behind a virtual microphone.
+[![Build and release](https://github.com/2sBs/audio-switch/actions/workflows/build-release.yml/badge.svg)](https://github.com/2sBs/audio-switch/actions/workflows/build-release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Audio Switch exposes device-neutral routes configured by the user:
+Audio Switch is a Windows tray app for switching physical microphones without
+changing the input device selected in games, calls, or recording software. It
+also mirrors one playback device to another.
 
-- Primary playback endpoint
-- Secondary mirrored playback endpoint
-- Primary microphone endpoint
-- Secondary microphone endpoint
-- Stable virtual microphone render endpoint
+The app uses device-neutral Primary and Secondary roles. You choose the WASAPI
+endpoints and can rename the roles. Audio Switch does not match specific device
+names in its routing logic.
 
-Primary and secondary are only roles. Their display names and physical WASAPI
-endpoints are user settings; the application contains no device-name matching.
+```text
+Primary playback -> Secondary playback
+Selected microphone -> Virtual cable input -> Applications
+```
 
-## Development status
+## Requirements
 
-The repository contains the Rust workspace, live WASAPI routing engine, native
-tray host, local control protocol, Stream Deck bridge, drift controller, and
-switch-cue synthesis.
+- x64 Windows 10 version 1809 or newer, including Windows 11
+- A virtual audio cable such as [VB-CABLE](https://vb-audio.com/Cable/)
+- Elgato Stream Deck 7.1 or newer for the optional plugin
 
-## Run
+Audio Switch does not bundle or download a virtual audio driver. Install one
+from its publisher before completing setup.
 
-On first launch, Audio Switch opens a guided setup for the virtual cable,
-playback devices, microphones, route verification, and startup preferences. If
-the configured virtual cable later becomes unavailable, the app offers to reopen
-setup without silently changing the saved route.
+## Install
 
-Start directly in guided setup:
+1. Download the setup executable and `SHA256SUMS.txt` from the
+   [latest release](https://github.com/2sBs/audio-switch/releases/latest).
+2. Compare the download with the published checksum:
+
+   ```powershell
+   Get-FileHash .\audio-switch-*-setup-windows-x86_64.exe -Algorithm SHA256
+   ```
+
+3. Run the installer and follow the guided setup.
+
+Release binaries are not code-signed. Windows SmartScreen may warn before
+launching them. Check the SHA-256 checksum or build from source if you do not
+want to run an unsigned download.
+
+The setup wizard selects the virtual cable, playback devices, microphones, and
+startup behavior. Applications should use the virtual cable's capture endpoint
+as their microphone. Audio Switch then changes the physical microphone behind
+that stable endpoint.
+
+## Use
+
+Left-click the tray icon or press `Ctrl+Shift+F11` to switch microphones.
+Right-click the icon to choose a route, inspect status, or open Settings.
+
+Audio Switch preserves the selected route if the Secondary device disconnects.
+It waits for that device and resumes the route when it returns instead of
+silently falling back to Primary.
+
+Only one tray app can run in a Windows session. The optional Stream Deck plugin
+controls that running app over a session-local named pipe. It does not include
+or launch another tray host. If the app is unavailable, the key displays
+`START AUDIO SWITCH`.
+
+Settings are stored in `%LOCALAPPDATA%\AudioSwitch\settings.json`. The app has
+no accounts, telemetry, cloud service, or automatic updater. The Stream Deck
+controller connects to the local Stream Deck WebSocket supplied at launch. The
+driver download button opens the publisher's website in your browser.
+
+Settings and logs may contain audio device names or endpoint IDs. Remove those
+values before attaching files to a public issue.
+
+## Build from source
+
+Install the stable Rust toolchain with the MSVC target and Visual Studio Build
+Tools for C++ desktop development. The repository pins the required Rust
+components in `rust-toolchain.toml`.
+
+```powershell
+cargo build --workspace
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+```
+
+The standalone executable is `target\debug\audio-switch.exe`. Start the setup
+wizard directly with:
 
 ```powershell
 cargo run --release -- --setup
 ```
 
-The virtual cable step links to the official VB-CABLE download page when a
-compatible endpoint is not detected. Audio Switch never downloads or
-redistributes the driver. Choose the five endpoints and optionally rename
-Primary and Secondary. Playback is captured from Primary and mirrored to
-Secondary; the selected physical microphone is routed into the virtual render
-endpoint. Applications should keep using the virtual device's capture endpoint,
-so changing the physical route does not change the endpoint seen by a game.
-
-Left-click the tray icon or press `Ctrl+Shift+F11` to switch. Right-click it for
-an explicit route choice, settings, and route status. Settings are saved under
-`%LOCALAPPDATA%\AudioSwitch\settings.json`.
-
-The native settings window keeps device roles, routing, cues, and startup under
-General. Updates is reserved for the planned updater, and About reports the app
-version. General can restart guided setup with fresh defaults after a
-confirmation. The current configuration and audio routing remain active until
-setup finishes, and cancelling returns to Settings without changing either.
-
-Only one tray-app instance can run per Windows session. Attempting a second
-launch displays an error instead of starting another set of audio routes.
-
-The Stream Deck plugin is a controller for the tray app over a session-scoped
-local named pipe. The tray app must already be running for Stream Deck controls
-to work; the plugin does not contain or launch another copy of the tray app.
-When the tray app is unavailable, the key displays `START AUDIO SWITCH` and an
-alert.
-
-Windows sign-in startup can optionally request UAC elevation and run Audio
-Switch at high process priority. When enabled, accept the UAC prompt at each
-sign-in to start the app. The existing non-elevated startup mode remains the
-default; enable the UAC/high-priority option separately in Settings.
-
-## Build
+To package the Stream Deck plugin, install Node.js 24 and the pinned Elgato CLI:
 
 ```powershell
-cargo build --workspace
-cargo test --workspace
-```
-
-To build and validate the native Stream Deck plugin package:
-
-```powershell
+npm install --global @elgato/cli@1.7.4
 .\scripts\package-stream-deck.ps1
 ```
 
-To build the per-user Windows installer with Inno Setup 6:
+To build the per-user installer, install Inno Setup 6 and run:
 
 ```powershell
 .\scripts\package-installer.ps1 -Version 0.4.0
 ```
 
-The installer installs only the standalone app under
-`%LOCALAPPDATA%\Programs\Audio Switch`. It preserves user settings during
-upgrades and uninstall, and launches the guided setup after a fresh install.
+Generated packages are written to `dist\` and are not tracked by Git.
 
-The standalone app is built as `target\release\audio-switch.exe`; the plugin
-package contains only `audio-switch-stream-deck.exe` and its Stream Deck assets.
+## Repository layout
 
-## Release
+- `crates/audio-switch-core` contains configuration, routing state, IPC, drift
+  control, and the WASAPI backend.
+- `crates/audio-switch-app` contains the tray app, native setup and settings UI,
+  autostart integration, and Stream Deck controller.
+- `stream-deck` contains the plugin manifest and source artwork.
+- `installer` and `scripts` contain the release packaging tools.
 
-Push a tag matching the Cargo workspace version, such as `v0.4.0`, to build a
-GitHub release. The release contains a versioned standalone Windows executable,
-a per-user Windows setup executable, a versioned controller-only Stream Deck
-plugin installer, and SHA-256 checksums for all artifacts.
+## Release process
 
-The project targets `stable-x86_64-pc-windows-msvc`. A virtual audio cable or
-the planned Audio Switch virtual driver is required for stable microphone
-routing and is not redistributed with this project.
+The GitHub Actions workflow checks formatting, tests, and Clippy before building
+the standalone app, installer, Stream Deck package, and SHA-256 checksums. A tag
+matching the Cargo workspace version, such as `v0.4.0`, publishes those files as
+a GitHub release.
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Report
+security issues through the private process in [SECURITY.md](SECURITY.md), not a
+public issue.
+
+Audio Switch is available under the [MIT License](LICENSE).
