@@ -155,7 +155,7 @@ jobs:
               $expected[$file.Name] = "sha256:$digest"
           }
 
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" 2>$null
+          $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,assets 2>$null
           if ($LASTEXITCODE -eq 0) {
               $release = $releaseJson | ConvertFrom-Json
               foreach ($asset in $release.assets) {
@@ -163,7 +163,7 @@ jobs:
                       throw "Release $env:RELEASE_TAG already exists with different assets. Published releases are immutable."
                   }
               }
-              if (-not $release.draft) {
+              if (-not $release.isDraft) {
                   if ($release.assets.Count -ne $expected.Count) {
                       throw "Release $env:RELEASE_TAG already exists with a different asset count. Published releases are immutable."
                   }
@@ -177,7 +177,7 @@ jobs:
                   --title "Audio Switch $env:RELEASE_VERSION" `
                   --draft
               if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }
-              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+              $release = gh release view $env:RELEASE_TAG --json isDraft,assets | ConvertFrom-Json
               if ($LASTEXITCODE -ne 0) { throw 'Could not verify the draft GitHub release.' }
           }
 
@@ -187,7 +187,7 @@ jobs:
                   if ($LASTEXITCODE -ne 0) { throw "Could not upload $($file.Name) to the draft release." }
               }
           }
-          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $release = gh release view $env:RELEASE_TAG --json isDraft,assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $release.assets.Count -ne $expected.Count) {
               throw 'The draft GitHub release does not contain the expected assets.'
           }
