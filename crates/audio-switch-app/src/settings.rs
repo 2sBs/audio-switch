@@ -825,31 +825,39 @@ fn refresh_update_page() {
     let Some(storage) = SETTINGS.get() else {
         return;
     };
-    let mut storage = storage.lock().expect("settings mutex poisoned");
-    let Some(context) = storage.as_mut() else {
-        return;
-    };
-    if context.page != SettingsPage::Updates {
-        return;
-    }
-    let snapshot = context.updater.snapshot();
-    if context.last_update_snapshot.as_ref() == Some(&snapshot) {
-        return;
-    }
-    let view = update_page_view(&snapshot);
-    set_text(context.update_status, &view.status);
-    set_text(context.update_version, &view.version);
-    set_text(context.update_detail, &view.detail);
-    set_text(context.update_action, &view.primary_label);
-    unsafe {
-        let _ = EnableWindow(context.check_now, view.check_enabled);
-        let _ = EnableWindow(
+    let (snapshot, status, version, detail, action, check_now, release_notes) = {
+        let mut storage = storage.lock().expect("settings mutex poisoned");
+        let Some(context) = storage.as_mut() else {
+            return;
+        };
+        if context.page != SettingsPage::Updates {
+            return;
+        }
+        let snapshot = context.updater.snapshot();
+        if context.last_update_snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        context.last_update_snapshot = Some(snapshot.clone());
+        (
+            snapshot,
+            context.update_status,
+            context.update_version,
+            context.update_detail,
             context.update_action,
-            view.primary_action != UpdatePrimaryAction::None,
-        );
-        let _ = EnableWindow(context.release_notes, view.release.is_some());
+            context.check_now,
+            context.release_notes,
+        )
+    };
+    let view = update_page_view(&snapshot);
+    set_text(status, &view.status);
+    set_text(version, &view.version);
+    set_text(detail, &view.detail);
+    set_text(action, &view.primary_label);
+    unsafe {
+        let _ = EnableWindow(check_now, view.check_enabled);
+        let _ = EnableWindow(action, view.primary_action != UpdatePrimaryAction::None);
+        let _ = EnableWindow(release_notes, view.release.is_some());
     }
-    context.last_update_snapshot = Some(snapshot);
 }
 
 fn request_update(window: HWND, action: UpdateAction) {
@@ -933,11 +941,14 @@ fn refresh_policy_detail() {
     let Some(storage) = SETTINGS.get() else {
         return;
     };
-    let storage = storage.lock().expect("settings mutex poisoned");
-    let Some(context) = storage.as_ref() else {
-        return;
+    let (update_policy, update_policy_detail) = {
+        let storage = storage.lock().expect("settings mutex poisoned");
+        let Some(context) = storage.as_ref() else {
+            return;
+        };
+        (context.update_policy, context.update_policy_detail)
     };
-    let detail = match selected_update_policy(context.update_policy) {
+    let detail = match selected_update_policy(update_policy) {
         UpdatePolicy::Automatic => {
             "Automatic downloads the verified installer, then installs it the next time Audio Switch starts."
         }
@@ -948,7 +959,7 @@ fn refresh_policy_detail() {
             "Disabled stops scheduled checks. Check again still works manually."
         }
     };
-    set_text(context.update_policy_detail, detail);
+    set_text(update_policy_detail, detail);
 }
 
 fn reset_settings(window: HWND) {
@@ -1302,6 +1313,14 @@ fn wide_null(value: &str) -> Vec<u16> {
 mod tests {
     use super::*;
 
+    fn save_test_config(_: AppConfig) -> Result<()> {
+        Ok(())
+    }
+
+    fn reset_test_config(_: HWND) -> Result<()> {
+        Ok(())
+    }
+
     #[test]
     fn about_page_shows_the_current_version() {
         assert!(
@@ -1341,5 +1360,55 @@ mod tests {
 
         assert_eq!(view.primary_action, UpdatePrimaryAction::Install);
         assert_eq!(view.primary_label, "Install and restart");
+    }
+
+    #[test]
+    #[ignore = "opens a native Windows settings window"]
+    fn native_updates_page_does_not_deadlock() {
+        use windows::Win32::Graphics::Gdi::UpdateWindow;
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+
+        let directory = tempfile::tempdir().expect("creating update test directory");
+        let updater = match UpdateController::start(
+            UpdatePolicy::Disabled,
+            &directory.path().join("settings.json"),
+        )
+        .expect("starting test updater")
+        {
+            crate::updates::StartOutcome::Installing => panic!("test updater tried to install"),
+            crate::updates::StartOutcome::Ready(updater) => updater,
+        };
+
+        open(
+            HWND::default(),
+            AppConfig::default(),
+            Vec::new(),
+            updater,
+            save_test_config,
+            reset_test_config,
+        )
+        .expect("opening settings window");
+        let window = SETTINGS
+            .get()
+            .and_then(|storage| storage.lock().ok()?.as_ref().map(|context| context.window))
+            .expect("settings context");
+
+        unsafe {
+            let _ = SendMessageW(
+                window,
+                WM_COMMAND,
+                Some(WPARAM(ID_UPDATES)),
+                Some(LPARAM(0)),
+            );
+            let _ = SendMessageW(
+                window,
+                WM_COMMAND,
+                Some(WPARAM(ID_UPDATE_POLICY)),
+                Some(LPARAM(0)),
+            );
+            let _ = UpdateWindow(window);
+            assert!(IsWindow(Some(window)).as_bool());
+            let _ = DestroyWindow(window);
+        }
     }
 }
