@@ -146,14 +146,54 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_VERSION: ${{ needs.build.outputs.release-version }}
         run: |
-          $assets = Get-ChildItem -LiteralPath .\dist -File | ForEach-Object FullName
-          gh release view $env:RELEASE_TAG *> $null
+          $files = @(Get-ChildItem -LiteralPath .\dist -File)
+          $assets = $files | ForEach-Object FullName
+          $expected = @{}
+          foreach ($file in $files) {
+              $digest = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $expected[$file.Name] = "sha256:$digest"
+          }
+
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" 2>$null
           if ($LASTEXITCODE -eq 0) {
-              gh release upload $env:RELEASE_TAG @assets --clobber
+              $release = $releaseJson | ConvertFrom-Json
+              foreach ($asset in $release.assets) {
+                  if (-not $expected.ContainsKey($asset.name) -or $expected[$asset.name] -ne $asset.digest) {
+                      throw "Release $env:RELEASE_TAG already exists with different assets. Published releases are immutable."
+                  }
+              }
+              if (-not $release.draft) {
+                  if ($release.assets.Count -ne $expected.Count) {
+                      throw "Release $env:RELEASE_TAG already exists with a different asset count. Published releases are immutable."
+                  }
+                  Write-Host "Release $env:RELEASE_TAG already contains the expected immutable assets."
+                  exit 0
+              }
           } else {
               gh release create $env:RELEASE_TAG @assets `
                   --verify-tag `
                   --generate-notes `
-                  --title "Audio Switch $env:RELEASE_VERSION"
+                  --title "Audio Switch $env:RELEASE_VERSION" `
+                  --draft
+              if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }
+              $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0) { throw 'Could not verify the draft GitHub release.' }
           }
-          if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }
+
+          foreach ($file in $files) {
+              if ($release.assets.name -notcontains $file.Name) {
+                  gh release upload $env:RELEASE_TAG $file.FullName
+                  if ($LASTEXITCODE -ne 0) { throw "Could not upload $($file.Name) to the draft release." }
+              }
+          }
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.assets.Count -ne $expected.Count) {
+              throw 'The draft GitHub release does not contain the expected assets.'
+          }
+          foreach ($asset in $release.assets) {
+              if (-not $expected.ContainsKey($asset.name) -or $expected[$asset.name] -ne $asset.digest) {
+                  throw 'The draft GitHub release asset digests did not match the build.'
+              }
+          }
+          gh release edit $env:RELEASE_TAG --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the verified GitHub release.' }

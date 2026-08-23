@@ -63,6 +63,15 @@ pub struct AudioConfig {
     pub cue_level_db: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdatePolicy {
+    #[default]
+    Automatic,
+    NotifyOnly,
+    Disabled,
+}
+
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
@@ -88,6 +97,8 @@ pub struct AppConfig {
     pub auto_start: bool,
     #[serde(default)]
     pub auto_start_elevated: bool,
+    #[serde(default)]
+    pub update_policy: UpdatePolicy,
 }
 
 impl Default for AppConfig {
@@ -101,6 +112,7 @@ impl Default for AppConfig {
             audio: AudioConfig::default(),
             auto_start: true,
             auto_start_elevated: false,
+            update_policy: UpdatePolicy::Automatic,
         }
     }
 }
@@ -203,6 +215,7 @@ mod tests {
         assert_eq!(config.hotkey.key, "F11");
         assert!(config.auto_start);
         assert!(!config.auto_start_elevated);
+        assert_eq!(config.update_policy, UpdatePolicy::Automatic);
         assert!(config.audio.cue_enabled);
     }
 
@@ -238,5 +251,15 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
 
         assert!(!config.auto_start_elevated);
+    }
+
+    #[test]
+    fn loads_settings_created_before_update_policy_was_added() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("updatePolicy");
+
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(config.update_policy, UpdatePolicy::Automatic);
     }
 }

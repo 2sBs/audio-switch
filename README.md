@@ -61,9 +61,17 @@ or launch another tray host. If the app is unavailable, the key displays
 `START AUDIO SWITCH`.
 
 Settings are stored in `%LOCALAPPDATA%\AudioSwitch\settings.json`. The app has
-no accounts, telemetry, cloud service, or automatic updater. The Stream Deck
-controller connects to the local Stream Deck WebSocket supplied at launch. The
-driver download button opens the publisher's website in your browser.
+no accounts, telemetry, or hosted service. Installed copies check the public
+GitHub Releases API once a day. By default, a newer Inno Setup installer is
+downloaded, checked against the SHA-256 digest returned by GitHub, and installed
+the next time Audio Switch starts. Settings can change this to notify-only or
+disable scheduled checks. Standalone builds only open the release page.
+
+Update state and downloaded installers are stored under
+`%LOCALAPPDATA%\AudioSwitch\updates`. Release checks disclose the usual HTTPS
+request metadata to GitHub. The Stream Deck controller connects only to the
+local Stream Deck WebSocket supplied at launch. The driver download button
+opens the publisher's website in your browser.
 
 Settings and logs may contain audio device names or endpoint IDs. Remove those
 values before attaching files to a public issue.
@@ -97,7 +105,7 @@ npm install --global @elgato/cli@1.7.4
 To build the per-user installer, install Inno Setup 6 and run:
 
 ```powershell
-.\scripts\package-installer.ps1 -Version 0.4.0
+.\scripts\package-installer.ps1 -Version 0.5.0
 ```
 
 Generated packages are written to `dist\` and are not tracked by Git.
@@ -115,8 +123,9 @@ Generated packages are written to `dist\` and are not tracked by Git.
 
 The GitHub Actions workflow checks formatting, tests, and Clippy before building
 the standalone app, installer, Stream Deck package, and SHA-256 checksums. A tag
-matching the Cargo workspace version, such as `v0.4.0`, publishes those files as
-a GitHub release.
+matching the Cargo workspace version, such as `v0.5.0`, publishes those files as
+an immutable GitHub release. Re-running a release succeeds only when every
+published asset still has the expected GitHub SHA-256 digest.
 
 ## Contributing and security
 

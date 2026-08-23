@@ -31,6 +31,7 @@ if (-not $SkipBuild) {
 $compilerCandidates = @(
     $env:INNO_SETUP_COMPILER,
     (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
     (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }

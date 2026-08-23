@@ -30,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
+use crate::updates::UpdateController;
 use crate::{settings, setup, ui};
 use audio_switch::local_control;
 
@@ -52,6 +53,7 @@ static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
 
 struct TrayContext {
     controller: RoutingController<WasapiBackend>,
+    updater: UpdateController,
     setup_active: bool,
 }
 
@@ -99,6 +101,7 @@ pub fn run(
     backend: WasapiBackend,
     store: ConfigStore,
     config: AppConfig,
+    updater: UpdateController,
     show_settings: bool,
     _instance: SingleInstanceGuard,
 ) -> Result<()> {
@@ -108,6 +111,7 @@ pub fn run(
     CONTEXT
         .set(Mutex::new(TrayContext {
             controller,
+            updater,
             setup_active: false,
         }))
         .map_err(|_| anyhow!("tray context was already initialized"))?;
@@ -267,11 +271,9 @@ unsafe extern "system" fn window_proc(
         }
         WM_DESTROY => {
             if let Some(context) = CONTEXT.get() {
-                context
-                    .lock()
-                    .expect("tray mutex poisoned")
-                    .controller
-                    .stop();
+                let mut context = context.lock().expect("tray mutex poisoned");
+                context.updater.stop();
+                context.controller.stop();
             }
             let data = icon_data(window, HICON::default(), "Audio Switch");
             unsafe {
@@ -319,6 +321,7 @@ fn open_settings(window: HWND) {
     };
     let context = context.lock().expect("tray mutex poisoned");
     let config = context.controller.config().clone();
+    let updater = context.updater.clone();
     let endpoints = match context.controller.backend().enumerate_endpoints() {
         Ok(endpoints) => endpoints,
         Err(error) => {
@@ -331,6 +334,7 @@ fn open_settings(window: HWND) {
         window,
         config,
         endpoints,
+        updater,
         apply_settings,
         reset_and_run_setup,
     ) {
@@ -340,12 +344,16 @@ fn open_settings(window: HWND) {
 
 fn apply_settings(config: AppConfig) -> Result<()> {
     let context = CONTEXT.get().context("tray controller is unavailable")?;
+    let mut context = context.lock().expect("tray mutex poisoned");
     context
-        .lock()
-        .expect("tray mutex poisoned")
         .controller
         .apply_config(config.clone())
         .context("applying audio settings")?;
+    context
+        .updater
+        .set_policy(config.update_policy)
+        .context("applying update settings")?;
+    drop(context);
     #[cfg(not(debug_assertions))]
     crate::autostart::reconcile(
         config.auto_start,
@@ -406,6 +414,7 @@ fn setup_defaults_preserving_hidden(current: &AppConfig) -> AppConfig {
     let mut config = AppConfig {
         active_mic: current.active_mic,
         hotkey: current.hotkey.clone(),
+        update_policy: current.update_policy,
         ..AppConfig::default()
     };
     config.audio.sample_rate = current.audio.sample_rate;
@@ -672,6 +681,7 @@ mod tests {
         current.audio.cue_level_db = -12.0;
         current.audio.cue_enabled = false;
         current.auto_start = false;
+        current.update_policy = audio_switch_core::UpdatePolicy::Disabled;
 
         let reset = setup_defaults_preserving_hidden(&current);
 
@@ -681,6 +691,7 @@ mod tests {
         assert_eq!(reset.audio.mirror_buffer_ms, 47);
         assert_eq!(reset.audio.mic_buffer_ms, 13);
         assert_eq!(reset.audio.cue_level_db, -12.0);
+        assert_eq!(reset.update_policy, current.update_policy);
         assert!(reset.audio.cue_enabled);
         assert!(reset.auto_start);
     }

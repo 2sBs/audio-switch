@@ -15,6 +15,7 @@ mod settings;
 mod setup;
 mod tray;
 mod ui;
+mod updates;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -116,6 +117,10 @@ fn continue_tray(
     open_settings: bool,
     instance: tray::SingleInstanceGuard,
 ) -> Result<()> {
+    let updater = match updates::UpdateController::start(config.update_policy, store.path())? {
+        updates::StartOutcome::Installing => return Ok(()),
+        updates::StartOutcome::Ready(updater) => updater,
+    };
     let backend = backend_from_config(&config);
     #[cfg(not(debug_assertions))]
     if std::env::var_os("AUDIO_SWITCH_SKIP_AUTOSTART").is_none() {
@@ -125,7 +130,7 @@ fn continue_tray(
             &std::env::current_exe().context("locating the Audio Switch executable")?,
         )?;
     }
-    tray::run(backend, store, config, open_settings, instance)
+    tray::run(backend, store, config, updater, open_settings, instance)
 }
 
 fn enumerate_endpoints() -> Result<Vec<audio_switch_core::audio::Endpoint>> {

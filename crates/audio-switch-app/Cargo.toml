@@ -12,9 +12,16 @@ build = "build.rs"
 [dependencies]
 anyhow.workspace = true
 audio-switch-core = { path = "../audio-switch-core" }
+semver.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tungstenite.workspace = true
+ureq.workspace = true
 windows.workspace = true
+
+[dev-dependencies]
+tempfile = "3.20"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"
