@@ -2,9 +2,11 @@ use std::mem::size_of;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow};
-use audio_switch_core::audio::{AudioBackend, WasapiBackend};
+use audio_switch_core::audio::{AudioBackend, AudioError, WasapiBackend};
 use audio_switch_core::ipc::{ControlCommand, ControlMessage};
-use audio_switch_core::{ActiveMic, AppConfig, ConfigStore, RouteStatus, RoutingController};
+use audio_switch_core::{
+    ActiveMic, AppConfig, ConfigStore, ControllerError, RouteStatus, RoutingController,
+};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
     POINT, WPARAM,
@@ -15,8 +17,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_F11,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_WARNING, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CW_USEDEFAULT, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
@@ -52,12 +54,31 @@ const WARNING_ICON: &[u8] = include_bytes!("../assets/tray/warning.ico");
 static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
 
 struct TrayContext {
+    window: usize,
     controller: RoutingController<WasapiBackend>,
     updater: UpdateController,
     setup_active: bool,
+    control_ready: bool,
+    startup_notification: Option<String>,
+    endpoint_notification: Option<String>,
+    route_notification: Option<String>,
+    operation_notification: Option<String>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NotificationChannel {
+    Startup,
+    Endpoint,
+    Route,
+    Operation,
 }
 
 pub(crate) struct SingleInstanceGuard(HANDLE);
+
+pub(crate) struct StartupDiagnostics {
+    pub approval: Option<Result<bool>>,
+    pub virtual_cable_correction: Option<setup::VirtualCableCorrection>,
+}
 
 impl Drop for SingleInstanceGuard {
     fn drop(&mut self) {
@@ -102,22 +123,30 @@ pub fn run(
     store: ConfigStore,
     config: AppConfig,
     updater: UpdateController,
+    startup_diagnostics: StartupDiagnostics,
     show_settings: bool,
     _instance: SingleInstanceGuard,
 ) -> Result<()> {
     let hotkey_enabled = config.hotkey.enabled;
+    let pending_virtual_cable_config = startup_diagnostics
+        .virtual_cable_correction
+        .as_ref()
+        .map(|_| (store.clone(), config.clone()));
     let mut controller = RoutingController::new(backend, store, config);
     controller.start().context("starting audio routes")?;
     CONTEXT
         .set(Mutex::new(TrayContext {
+            window: 0,
             controller,
             updater,
             setup_active: false,
+            control_ready: false,
+            startup_notification: None,
+            endpoint_notification: None,
+            route_notification: None,
+            operation_notification: None,
         }))
         .map_err(|_| anyhow!("tray context was already initialized"))?;
-    local_control::start_server(handle_control_command)
-        .context("starting the local control server")?;
-
     let module = unsafe { GetModuleHandleW(None) }.context("getting application module")?;
     let instance = HINSTANCE(module.0);
     let class = WNDCLASSW {
@@ -148,8 +177,36 @@ pub fn run(
         )
     }
     .context("creating tray message window")?;
+    if let Some(context) = CONTEXT.get() {
+        context.lock().expect("tray mutex poisoned").window = window.0 as usize;
+    }
 
     add_or_update_icon(window, true).context("adding tray icon")?;
+    local_control::start_server(handle_control_command)
+        .context("starting the local control server")?;
+    if let Some((store, config)) = pending_virtual_cable_config
+        && let Err(error) = store
+            .save(&config)
+            .context("saving corrected virtual cable selection")
+    {
+        notify_once(
+            window,
+            NotificationChannel::Operation,
+            "Audio Switch startup error",
+            &format!("{error:#}"),
+            NIIF_ERROR,
+        );
+        return Err(error);
+    }
+    notify_virtual_cable_correction(
+        window,
+        startup_diagnostics.virtual_cable_correction.as_ref(),
+    );
+    if let Some(context) = CONTEXT.get() {
+        context.lock().expect("tray mutex poisoned").control_ready = true;
+    }
+    notify_startup_health(window, startup_diagnostics.approval);
+    notify_route_failure(window);
     if hotkey_enabled {
         unsafe {
             RegisterHotKey(
@@ -192,30 +249,59 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
             message: "tray controller is not ready".into(),
         };
     };
-    let mut context = context.lock().expect("tray mutex poisoned");
-    if context.setup_active && control_command_changes_active_mic(&command) {
-        return ControlMessage::Error {
-            request_id,
-            message: "setup is in progress".into(),
-        };
-    }
-    let result = match command {
-        ControlCommand::GetState { .. } | ControlCommand::Subscribe { .. } => Ok(()),
-        ControlCommand::ToggleMic { .. } => context.controller.toggle_mic(),
-        ControlCommand::SetActiveMic { active_mic, .. } => {
-            context.controller.select_mic(active_mic)
+    let changes_active_mic = control_command_changes_active_mic(&command);
+    let (result, state, labels, window) = {
+        let mut context = context.lock().expect("tray mutex poisoned");
+        if let Some(message) = control_command_block_reason(
+            context.control_ready,
+            context.setup_active,
+            changes_active_mic,
+        ) {
+            return ControlMessage::Error {
+                request_id,
+                message: message.into(),
+            };
         }
+        let result = match command {
+            ControlCommand::GetState { .. } | ControlCommand::Subscribe { .. } => Ok(()),
+            ControlCommand::ToggleMic { .. } => context.controller.toggle_mic(),
+            ControlCommand::SetActiveMic { active_mic, .. } => {
+                context.controller.select_mic(active_mic)
+            }
+        };
+        (
+            result,
+            context.controller.state().clone(),
+            context.controller.config().labels.clone(),
+            HWND(std::ptr::without_provenance_mut(context.window)),
+        )
     };
     match result {
-        Ok(()) => ControlMessage::State {
-            request_id,
-            state: context.controller.state().clone(),
-            labels: context.controller.config().labels.clone(),
-        },
-        Err(error) => ControlMessage::Error {
-            request_id,
-            message: error.to_string(),
-        },
+        Ok(()) => {
+            if changes_active_mic {
+                clear_notification_state(NotificationChannel::Operation);
+                notify_route_failure(window);
+            }
+            ControlMessage::State {
+                request_id,
+                state,
+                labels,
+            }
+        }
+        Err(error) => {
+            eprintln!("Audio Switch control command failed: {error}");
+            notify_once(
+                window,
+                NotificationChannel::Operation,
+                "Audio Switch error",
+                &error.to_string(),
+                NIIF_ERROR,
+            );
+            ControlMessage::Error {
+                request_id,
+                message: error.to_string(),
+            }
+        }
     }
 }
 
@@ -224,6 +310,22 @@ fn control_command_changes_active_mic(command: &ControlCommand) -> bool {
         command,
         ControlCommand::ToggleMic { .. } | ControlCommand::SetActiveMic { .. }
     )
+}
+
+fn control_command_block_reason(
+    ready: bool,
+    setup_active: bool,
+    changes_active_mic: bool,
+) -> Option<&'static str> {
+    if !changes_active_mic {
+        None
+    } else if !ready {
+        Some("Audio Switch is still starting")
+    } else if setup_active {
+        Some("setup is in progress")
+    } else {
+        None
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -288,21 +390,39 @@ unsafe extern "system" fn window_proc(
 }
 
 fn toggle(window: HWND) {
-    with_controller(|controller| controller.toggle_mic());
+    with_controller(
+        window,
+        NotificationChannel::Operation,
+        "Audio Switch error",
+        |controller| controller.toggle_mic(),
+    );
     let _ = add_or_update_icon(window, false);
 }
 
 fn select(window: HWND, active: ActiveMic) {
-    with_controller(|controller| controller.select_mic(active));
+    with_controller(
+        window,
+        NotificationChannel::Operation,
+        "Audio Switch error",
+        |controller| controller.select_mic(active),
+    );
     let _ = add_or_update_icon(window, false);
 }
 
 fn refresh(window: HWND) {
-    with_controller(|controller| controller.refresh_endpoints());
+    with_controller(
+        window,
+        NotificationChannel::Endpoint,
+        "Audio Switch endpoint error",
+        |controller| controller.refresh_endpoints(),
+    );
     let _ = add_or_update_icon(window, false);
 }
 
 fn with_controller(
+    window: HWND,
+    channel: NotificationChannel,
+    error_title: &str,
     action: impl FnOnce(
         &mut RoutingController<WasapiBackend>,
     ) -> Result<(), audio_switch_core::ControllerError>,
@@ -310,8 +430,157 @@ fn with_controller(
     let Some(context) = CONTEXT.get() else {
         return;
     };
-    if let Err(error) = action(&mut context.lock().expect("tray mutex poisoned").controller) {
-        eprintln!("Audio Switch control action failed: {error}");
+    let result = action(&mut context.lock().expect("tray mutex poisoned").controller);
+    match result {
+        Ok(()) => {
+            clear_notification_state(channel);
+            notify_route_failure(window);
+        }
+        Err(error) => {
+            eprintln!("Audio Switch control action failed: {error}");
+            if channel == NotificationChannel::Endpoint
+                && let ControllerError::Audio(audio_error) = &error
+            {
+                notify_endpoint_failure(window, error_title, &error.to_string(), audio_error);
+            } else {
+                notify_once(window, channel, error_title, &error.to_string(), NIIF_ERROR);
+            }
+        }
+    }
+}
+
+fn notify_startup_health(window: HWND, approval: Option<Result<bool>>) {
+    match approval {
+        Some(Ok(true)) => notify_once(
+            window,
+            NotificationChannel::Startup,
+            "Audio Switch startup is disabled",
+            "Windows Startup Apps is blocking Audio Switch. Enable Audio Switch in Task Manager's Startup apps page.",
+            NIIF_WARNING,
+        ),
+        Some(Ok(false)) | None => clear_notification_state(NotificationChannel::Startup),
+        Some(Err(error)) => notify_once(
+            window,
+            NotificationChannel::Startup,
+            "Audio Switch could not verify startup",
+            &error.to_string(),
+            NIIF_WARNING,
+        ),
+    }
+}
+
+fn notify_virtual_cable_correction(
+    window: HWND,
+    correction: Option<&setup::VirtualCableCorrection>,
+) {
+    let Some(correction) = correction else {
+        return;
+    };
+    notify_once(
+        window,
+        NotificationChannel::Operation,
+        "Audio Switch corrected its virtual cable",
+        &format!(
+            "Replaced {} with {} because the 16-channel input is not the standard microphone route.",
+            correction.previous, correction.selected
+        ),
+        NIIF_WARNING,
+    );
+}
+
+fn notify_route_failure(window: HWND) {
+    let notice = CONTEXT.get().and_then(|context| {
+        let context = context.lock().expect("tray mutex poisoned");
+        route_failure_notice(context.controller.state())
+    });
+    match notice {
+        Some(message) => notify_once(
+            window,
+            NotificationChannel::Route,
+            "Audio Switch routing error",
+            &message,
+            NIIF_ERROR,
+        ),
+        None => clear_notification_state(NotificationChannel::Route),
+    }
+}
+
+fn route_failure_notice(state: &audio_switch_core::AppState) -> Option<String> {
+    let mut failures = Vec::with_capacity(2);
+    if let RouteStatus::Error { message } = &state.mic_status {
+        failures.push(format!("Microphone route: {message}"));
+    }
+    if let RouteStatus::Error { message } = &state.mirror_status {
+        failures.push(format!("Playback mirror: {message}"));
+    }
+    (!failures.is_empty()).then(|| failures.join("\r\n"))
+}
+
+fn notify_once(
+    window: HWND,
+    channel: NotificationChannel,
+    title: &str,
+    message: &str,
+    severity: windows::Win32::UI::Shell::NOTIFY_ICON_INFOTIP_FLAGS,
+) {
+    let key = format!("{title}\n{message}");
+    notify_once_with_key(window, channel, &key, title, message, severity);
+}
+
+fn notify_once_with_key(
+    window: HWND,
+    channel: NotificationChannel,
+    key: &str,
+    title: &str,
+    message: &str,
+    severity: windows::Win32::UI::Shell::NOTIFY_ICON_INFOTIP_FLAGS,
+) {
+    let should_notify = CONTEXT.get().is_some_and(|context| {
+        let mut context = context.lock().expect("tray mutex poisoned");
+        let previous = match channel {
+            NotificationChannel::Startup => &mut context.startup_notification,
+            NotificationChannel::Endpoint => &mut context.endpoint_notification,
+            NotificationChannel::Route => &mut context.route_notification,
+            NotificationChannel::Operation => &mut context.operation_notification,
+        };
+        if previous.as_deref() == Some(key) {
+            false
+        } else {
+            *previous = Some(key.to_owned());
+            true
+        }
+    });
+    if should_notify && let Err(error) = show_notification(window, title, message, severity) {
+        eprintln!("Audio Switch notification failed: {error:#}");
+    }
+}
+
+fn notify_endpoint_failure(window: HWND, title: &str, message: &str, error: &AudioError) {
+    let key = endpoint_notification_key(error);
+    notify_once_with_key(
+        window,
+        NotificationChannel::Endpoint,
+        &key,
+        title,
+        message,
+        NIIF_ERROR,
+    );
+}
+
+fn endpoint_notification_key(error: &AudioError) -> String {
+    format!("endpoint\n{error}")
+}
+
+fn clear_notification_state(channel: NotificationChannel) {
+    if let Some(context) = CONTEXT.get() {
+        let mut context = context.lock().expect("tray mutex poisoned");
+        let notification = match channel {
+            NotificationChannel::Startup => &mut context.startup_notification,
+            NotificationChannel::Endpoint => &mut context.endpoint_notification,
+            NotificationChannel::Route => &mut context.route_notification,
+            NotificationChannel::Operation => &mut context.operation_notification,
+        };
+        *notification = None;
     }
 }
 
@@ -319,17 +588,30 @@ fn open_settings(window: HWND) {
     let Some(context) = CONTEXT.get() else {
         return;
     };
-    let context = context.lock().expect("tray mutex poisoned");
-    let config = context.controller.config().clone();
-    let updater = context.updater.clone();
-    let endpoints = match context.controller.backend().enumerate_endpoints() {
-        Ok(endpoints) => endpoints,
+    let (config, updater, endpoints) = {
+        let context = context.lock().expect("tray mutex poisoned");
+        (
+            context.controller.config().clone(),
+            context.updater.clone(),
+            context.controller.backend().enumerate_endpoints(),
+        )
+    };
+    let endpoints = match endpoints {
+        Ok(endpoints) => {
+            clear_notification_state(NotificationChannel::Endpoint);
+            endpoints
+        }
         Err(error) => {
             eprintln!("Audio Switch could not list settings endpoints: {error}");
+            notify_endpoint_failure(
+                window,
+                "Audio Switch endpoint error",
+                &format!("Could not list audio devices: {error}"),
+                &error,
+            );
             return;
         }
     };
-    drop(context);
     if let Err(error) = settings::open(
         window,
         config,
@@ -339,28 +621,81 @@ fn open_settings(window: HWND) {
         reset_and_run_setup,
     ) {
         eprintln!("Audio Switch settings failed: {error:#}");
+        notify_once(
+            window,
+            NotificationChannel::Operation,
+            "Audio Switch settings error",
+            &format!("{error:#}"),
+            NIIF_ERROR,
+        );
+    } else {
+        clear_notification_state(NotificationChannel::Operation);
     }
 }
 
 fn apply_settings(config: AppConfig) -> Result<()> {
-    let context = CONTEXT.get().context("tray controller is unavailable")?;
-    let mut context = context.lock().expect("tray mutex poisoned");
-    context
-        .controller
-        .apply_config(config.clone())
-        .context("applying audio settings")?;
-    context
-        .updater
+    let result = apply_settings_inner(config);
+    match &result {
+        Ok(()) => clear_notification_state(NotificationChannel::Operation),
+        Err(error) => {
+            if let Some(window) = tray_window() {
+                if let Some(audio_error) = underlying_audio_error(error) {
+                    notify_endpoint_failure(
+                        window,
+                        "Audio Switch endpoint error",
+                        &format!("{error:#}"),
+                        audio_error,
+                    );
+                } else {
+                    notify_once(
+                        window,
+                        NotificationChannel::Operation,
+                        "Audio Switch settings error",
+                        &format!("{error:#}"),
+                        NIIF_ERROR,
+                    );
+                }
+            }
+        }
+    }
+    result
+}
+
+fn apply_settings_inner(config: AppConfig) -> Result<()> {
+    let startup_approval = config
+        .auto_start
+        .then(crate::autostart::disabled_by_windows);
+    let (window, updater) = {
+        let context = CONTEXT.get().context("tray controller is unavailable")?;
+        let mut context = context.lock().expect("tray mutex poisoned");
+        context
+            .controller
+            .apply_config(config.clone())
+            .context("applying audio settings")?;
+        (
+            HWND(std::ptr::without_provenance_mut(context.window)),
+            context.updater.clone(),
+        )
+    };
+    clear_notification_state(NotificationChannel::Endpoint);
+    updater
         .set_policy(config.update_policy)
         .context("applying update settings")?;
-    drop(context);
     #[cfg(not(debug_assertions))]
     crate::autostart::reconcile(
         config.auto_start,
         config.auto_start_elevated,
         &std::env::current_exe().context("locating Audio Switch executable")?,
     )?;
+    notify_startup_health(window, startup_approval);
     Ok(())
+}
+
+fn tray_window() -> Option<HWND> {
+    CONTEXT.get().map(|context| {
+        let context = context.lock().expect("tray mutex poisoned");
+        HWND(std::ptr::without_provenance_mut(context.window))
+    })
 }
 
 fn setup_is_active() -> bool {
@@ -370,7 +705,34 @@ fn setup_is_active() -> bool {
 }
 
 fn reset_and_run_setup(window: HWND) -> Result<()> {
+    let result = reset_and_run_setup_inner(window);
+    match &result {
+        Ok(()) => clear_notification_state(NotificationChannel::Operation),
+        Err(error) => {
+            if let Some(audio_error) = underlying_audio_error(error) {
+                notify_endpoint_failure(
+                    window,
+                    "Audio Switch endpoint error",
+                    &format!("{error:#}"),
+                    audio_error,
+                );
+            } else {
+                notify_once(
+                    window,
+                    NotificationChannel::Operation,
+                    "Audio Switch setup error",
+                    &format!("{error:#}"),
+                    NIIF_ERROR,
+                );
+            }
+        }
+    }
+    result
+}
+
+fn reset_and_run_setup_inner(window: HWND) -> Result<()> {
     let endpoints = crate::enumerate_endpoints().context("enumerating setup endpoints")?;
+    clear_notification_state(NotificationChannel::Endpoint);
     let current_config = {
         let mut context = CONTEXT
             .get()
@@ -384,11 +746,11 @@ fn reset_and_run_setup(window: HWND) -> Result<()> {
     let setup_result = setup::run(
         setup_defaults_preserving_hidden(&current_config),
         endpoints,
-        crate::enumerate_endpoints,
+        refresh_setup_endpoints,
     );
     match setup_result {
         Ok(Some(config)) => {
-            let result = apply_settings(config);
+            let result = apply_settings_inner(config);
             set_setup_active(false);
             result
         }
@@ -402,6 +764,40 @@ fn reset_and_run_setup(window: HWND) -> Result<()> {
             Err(error)
         }
     }
+}
+
+fn refresh_setup_endpoints() -> Result<Vec<audio_switch_core::audio::Endpoint>> {
+    let result = crate::enumerate_endpoints();
+    match &result {
+        Ok(_) => clear_notification_state(NotificationChannel::Endpoint),
+        Err(error) => {
+            if let Some(window) = tray_window() {
+                if let Some(audio_error) = underlying_audio_error(error) {
+                    notify_endpoint_failure(
+                        window,
+                        "Audio Switch endpoint error",
+                        &format!("{error:#}"),
+                        audio_error,
+                    );
+                } else {
+                    notify_once(
+                        window,
+                        NotificationChannel::Endpoint,
+                        "Audio Switch endpoint error",
+                        &format!("{error:#}"),
+                        NIIF_ERROR,
+                    );
+                }
+            }
+        }
+    }
+    result
+}
+
+fn underlying_audio_error(error: &anyhow::Error) -> Option<&AudioError> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<AudioError>())
 }
 
 fn set_setup_active(active: bool) {
@@ -631,6 +1027,28 @@ fn icon_data(window: HWND, icon: HICON, tooltip: &str) -> NOTIFYICONDATAW {
     data
 }
 
+fn show_notification(
+    window: HWND,
+    title: &str,
+    message: &str,
+    severity: windows::Win32::UI::Shell::NOTIFY_ICON_INFOTIP_FLAGS,
+) -> Result<()> {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: window,
+        uID: TRAY_ICON_ID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: severity,
+        ..Default::default()
+    };
+    copy_wide(title, &mut data.szInfoTitle);
+    copy_wide(message, &mut data.szInfo);
+    if !unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool() {
+        return Err(anyhow!("Windows rejected the notification"));
+    }
+    Ok(())
+}
+
 fn copy_wide(value: &str, destination: &mut [u16]) {
     destination.fill(0);
     let maximum_length = destination.len().saturating_sub(1);
@@ -655,6 +1073,44 @@ mod tests {
     use super::*;
 
     static NEXT_MUTEX_ID: AtomicUsize = AtomicUsize::new(1);
+
+    #[test]
+    fn route_failure_notice_names_each_failed_route() {
+        let mut state = audio_switch_core::AppState::new(ActiveMic::Primary);
+        state.mic_status = RouteStatus::Error {
+            message: "virtual cable unavailable".into(),
+        };
+        state.mirror_status = RouteStatus::Error {
+            message: "speakers unavailable".into(),
+        };
+
+        assert_eq!(
+            route_failure_notice(&state),
+            Some(
+                "Microphone route: virtual cable unavailable\r\nPlayback mirror: speakers unavailable"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn endpoint_errors_use_the_underlying_audio_error_as_the_deduplication_key() {
+        let refresh_error = anyhow::Error::new(AudioError::Backend("enumeration failed".into()))
+            .context("refreshing endpoints");
+        let settings_error = anyhow::Error::new(AudioError::Backend("enumeration failed".into()))
+            .context("opening settings");
+        let operation_error = anyhow!("saving settings failed");
+
+        let refresh_key = endpoint_notification_key(
+            underlying_audio_error(&refresh_error).expect("audio error should be retained"),
+        );
+        let settings_key = endpoint_notification_key(
+            underlying_audio_error(&settings_error).expect("audio error should be retained"),
+        );
+
+        assert_eq!(refresh_key, settings_key);
+        assert!(underlying_audio_error(&operation_error).is_none());
+    }
 
     #[test]
     fn status_text_is_human_readable() {
@@ -713,6 +1169,16 @@ mod tests {
         assert!(!control_command_changes_active_mic(
             &ControlCommand::Subscribe { request_id: None }
         ));
+    }
+
+    #[test]
+    fn startup_blocks_mutating_commands_until_deferred_settings_are_saved() {
+        assert_eq!(
+            control_command_block_reason(false, false, true),
+            Some("Audio Switch is still starting")
+        );
+        assert_eq!(control_command_block_reason(false, false, false), None);
+        assert_eq!(control_command_block_reason(true, false, true), None);
     }
 
     #[test]

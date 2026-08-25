@@ -14,7 +14,8 @@ use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED, SetWindowTheme,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowTextLengthW, GetWindowTextW, HICON, LoadIconW, SendMessageW, WM_SETFONT,
+    GetWindowTextLengthW, GetWindowTextW, HICON, LoadIconW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    MB_TOPMOST, MessageBoxW, SendMessageW, WM_SETFONT,
 };
 use windows::core::{PCWSTR, w};
 
@@ -178,6 +179,19 @@ pub fn use_dark_control(window: HWND) {
     }
 }
 
+pub fn show_fatal_error(error: &anyhow::Error) {
+    let message = format!("Audio Switch could not start.\r\n\r\n{error:#}");
+    let message = wide_null(&message);
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            w!("Audio Switch startup error"),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
+}
+
 fn font(height: i32, semibold: bool) -> HFONT {
     unsafe {
         CreateFontW(
@@ -220,4 +234,8 @@ fn window_text(window: HWND) -> Vec<u16> {
     let copied = unsafe { GetWindowTextW(window, &mut value) }.max(0) as usize;
     value.truncate(copied);
     value
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
 }

@@ -17,8 +17,19 @@ mod tray;
 mod ui;
 mod updates;
 
-fn main() -> Result<()> {
+fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Err(error) = run(&args) {
+        if uses_interactive_error_dialog(&args) {
+            ui::show_fatal_error(&error);
+        } else {
+            eprintln!("{error:#}");
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--elevated-autostart") {
         return autostart::launch_elevated(
             &std::env::current_exe().context("locating the Audio Switch executable")?,
@@ -79,6 +90,22 @@ fn main() -> Result<()> {
     )
 }
 
+fn uses_interactive_error_dialog(args: &[String]) -> bool {
+    if args.iter().any(|arg| arg == "--elevated-autostart") {
+        return true;
+    }
+    !args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--remove-autostart"
+                | "--list-devices"
+                | "--spike-seconds"
+                | "--set-active"
+                | "--control"
+        )
+    })
+}
+
 fn run_tray_role(open_settings: bool, force_setup: bool) -> Result<()> {
     let Some(instance) = tray::acquire_single_instance()? else {
         return Ok(());
@@ -87,12 +114,20 @@ fn run_tray_role(open_settings: bool, force_setup: bool) -> Result<()> {
     let first_run = !store.exists();
     let mut config = store.load_or_default().context("loading configuration")?;
     let mut endpoints = enumerate_endpoints().context("enumerating setup endpoints")?;
+    let mut virtual_cable_correction =
+        startup_virtual_cable_correction(force_setup, &mut config, &endpoints);
 
     let mut repair_missing_cable = false;
-    if !force_setup && !first_run && setup::virtual_cable_missing(&config, &endpoints) {
+    let retry_virtual_cable =
+        should_retry_virtual_cable(&config, &endpoints, virtual_cable_correction.is_some());
+    if !force_setup && !first_run && retry_virtual_cable {
         // Give slow virtual-cable drivers a moment to register at sign-in before prompting.
         std::thread::sleep(std::time::Duration::from_secs(3));
         endpoints = enumerate_endpoints().context("re-enumerating setup endpoints")?;
+        if virtual_cable_correction.is_none() {
+            virtual_cable_correction =
+                startup_virtual_cable_correction(false, &mut config, &endpoints);
+        }
         repair_missing_cable = setup::virtual_cable_missing(&config, &endpoints)
             && setup::prompt_for_missing_virtual_cable();
     }
@@ -102,24 +137,61 @@ fn run_tray_role(open_settings: bool, force_setup: bool) -> Result<()> {
             if first_run {
                 return Ok(());
             }
-            return continue_tray(config, store, open_settings, instance);
+            return continue_tray(
+                config,
+                store,
+                open_settings,
+                virtual_cable_correction,
+                instance,
+            );
         };
         store.save(&updated).context("saving initial setup")?;
         config = updated;
+        virtual_cable_correction = None;
     }
 
-    continue_tray(config, store, open_settings, instance)
+    continue_tray(
+        config,
+        store,
+        open_settings,
+        virtual_cable_correction,
+        instance,
+    )
+}
+
+fn startup_virtual_cable_correction(
+    force_setup: bool,
+    config: &mut AppConfig,
+    endpoints: &[audio_switch_core::audio::Endpoint],
+) -> Option<setup::VirtualCableCorrection> {
+    (!force_setup)
+        .then(|| setup::repair_legacy_16_channel_selection(config, endpoints))
+        .flatten()
+}
+
+fn should_retry_virtual_cable(
+    config: &AppConfig,
+    endpoints: &[audio_switch_core::audio::Endpoint],
+    already_corrected: bool,
+) -> bool {
+    setup::virtual_cable_missing(config, endpoints)
+        || (!already_corrected && setup::legacy_16_channel_is_selected(config, endpoints))
 }
 
 fn continue_tray(
     config: AppConfig,
     store: ConfigStore,
     open_settings: bool,
+    virtual_cable_correction: Option<setup::VirtualCableCorrection>,
     instance: tray::SingleInstanceGuard,
 ) -> Result<()> {
     let updater = match updates::UpdateController::start(config.update_policy, store.path())? {
         updates::StartOutcome::Installing => return Ok(()),
         updates::StartOutcome::Ready(updater) => updater,
+    };
+    let startup_diagnostics = tray::StartupDiagnostics {
+        approval: config.auto_start.then(autostart::disabled_by_windows),
+        virtual_cable_correction,
     };
     let backend = backend_from_config(&config);
     #[cfg(not(debug_assertions))]
@@ -130,7 +202,15 @@ fn continue_tray(
             &std::env::current_exe().context("locating the Audio Switch executable")?,
         )?;
     }
-    tray::run(backend, store, config, updater, open_settings, instance)
+    tray::run(
+        backend,
+        store,
+        config,
+        updater,
+        startup_diagnostics,
+        open_settings,
+        instance,
+    )
 }
 
 fn enumerate_endpoints() -> Result<Vec<audio_switch_core::audio::Endpoint>> {
@@ -229,4 +309,101 @@ fn backend_from_config(config: &AppConfig) -> WasapiBackend {
 fn required_id<'a>(id: &'a Option<String>, label: &str) -> Result<&'a str> {
     id.as_deref()
         .with_context(|| format!("{label} endpoint has not been configured"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use audio_switch_core::audio::{Endpoint, EndpointFlow};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        std::iter::once("audio-switch.exe".to_owned())
+            .chain(values.iter().map(|value| (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn tray_modes_show_fatal_errors_interactively() {
+        assert!(uses_interactive_error_dialog(&args(&[])));
+        assert!(uses_interactive_error_dialog(&args(&["--tray"])));
+        assert!(uses_interactive_error_dialog(&args(&["--setup"])));
+        assert!(uses_interactive_error_dialog(&args(&[
+            "--elevated-autostart"
+        ])));
+    }
+
+    #[test]
+    fn maintenance_and_control_modes_never_open_error_dialogs() {
+        for mode in [
+            "--remove-autostart",
+            "--list-devices",
+            "--spike-seconds",
+            "--set-active",
+            "--control",
+        ] {
+            assert!(!uses_interactive_error_dialog(&args(&[mode])));
+        }
+    }
+
+    #[test]
+    fn forced_setup_does_not_apply_an_automatic_cable_repair() {
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("cable-16ch".into());
+        let endpoints = [
+            Endpoint {
+                id: "cable-16ch".into(),
+                name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
+                flow: EndpointFlow::Render,
+                available: true,
+            },
+            Endpoint {
+                id: "cable-input".into(),
+                name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                flow: EndpointFlow::Render,
+                available: true,
+            },
+        ];
+
+        let correction = startup_virtual_cable_correction(true, &mut config, &endpoints);
+
+        assert_eq!(correction, None);
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("cable-16ch")
+        );
+    }
+
+    #[test]
+    fn delayed_endpoint_enumeration_can_still_trigger_the_cable_repair() {
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("cable-16ch".into());
+        let initial = [Endpoint {
+            id: "cable-16ch".into(),
+            name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
+            flow: EndpointFlow::Render,
+            available: true,
+        }];
+        let refreshed = [
+            initial[0].clone(),
+            Endpoint {
+                id: "cable-input".into(),
+                name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                flow: EndpointFlow::Render,
+                available: true,
+            },
+        ];
+
+        let initial_correction = startup_virtual_cable_correction(false, &mut config, &initial);
+        assert_eq!(initial_correction, None);
+        assert!(should_retry_virtual_cable(
+            &config,
+            &initial,
+            initial_correction.is_some()
+        ));
+        assert!(startup_virtual_cable_correction(false, &mut config, &refreshed).is_some());
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("cable-input")
+        );
+    }
 }

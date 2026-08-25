@@ -1411,4 +1411,58 @@ mod tests {
             let _ = DestroyWindow(window);
         }
     }
+
+    #[test]
+    #[ignore = "opens a native Windows settings window"]
+    fn native_virtual_cable_selection_preserves_the_saved_endpoint() {
+        let directory = tempfile::tempdir().expect("creating settings test directory");
+        let updater = match UpdateController::start(
+            UpdatePolicy::Disabled,
+            &directory.path().join("settings.json"),
+        )
+        .expect("starting test updater")
+        {
+            crate::updates::StartOutcome::Installing => panic!("test updater tried to install"),
+            crate::updates::StartOutcome::Ready(updater) => updater,
+        };
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("standard-cable".into());
+        let endpoints = vec![
+            Endpoint {
+                id: "cable-16ch".into(),
+                name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
+                flow: EndpointFlow::Render,
+                available: true,
+            },
+            Endpoint {
+                id: "standard-cable".into(),
+                name: "CABLE Input (VB-Audio Virtual Cable)".into(),
+                flow: EndpointFlow::Render,
+                available: true,
+            },
+        ];
+
+        open(
+            HWND::default(),
+            config,
+            endpoints,
+            updater,
+            save_test_config,
+            reset_test_config,
+        )
+        .expect("opening settings window");
+        let (window, selected) = SETTINGS
+            .get()
+            .and_then(|storage| {
+                let storage = storage.lock().ok()?;
+                let context = storage.as_ref()?;
+                Some((context.window, selection(&context.virtual_render)))
+            })
+            .expect("settings context");
+
+        assert_eq!(selected.as_deref(), Some("standard-cable"));
+        unsafe {
+            let _ = DestroyWindow(window);
+        }
+    }
 }

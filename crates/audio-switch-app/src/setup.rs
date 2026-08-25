@@ -113,6 +113,43 @@ pub fn virtual_cable_missing(config: &AppConfig, endpoints: &[Endpoint]) -> bool
     !endpoint_is_available(endpoints, selected, EndpointFlow::Render)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualCableCorrection {
+    pub previous: String,
+    pub selected: String,
+}
+
+pub fn repair_legacy_16_channel_selection(
+    config: &mut AppConfig,
+    endpoints: &[Endpoint],
+) -> Option<VirtualCableCorrection> {
+    let selected_id = config.endpoints.virtual_render.as_deref()?;
+    let previous = endpoints.iter().find(|endpoint| {
+        endpoint.id.eq_ignore_ascii_case(selected_id) && legacy_16_channel_cable(endpoint)
+    })?;
+    let selected = endpoints
+        .iter()
+        .find(|endpoint| standard_vb_cable_input(endpoint))?;
+    if previous.id.eq_ignore_ascii_case(&selected.id) {
+        return None;
+    }
+
+    config.endpoints.virtual_render = Some(selected.id.clone());
+    Some(VirtualCableCorrection {
+        previous: previous.name.clone(),
+        selected: selected.name.clone(),
+    })
+}
+
+pub fn legacy_16_channel_is_selected(config: &AppConfig, endpoints: &[Endpoint]) -> bool {
+    let Some(selected_id) = config.endpoints.virtual_render.as_deref() else {
+        return false;
+    };
+    endpoints.iter().any(|endpoint| {
+        endpoint.id.eq_ignore_ascii_case(selected_id) && legacy_16_channel_cable(endpoint)
+    })
+}
+
 pub fn prompt_for_missing_virtual_cable() -> bool {
     unsafe {
         MessageBoxW(
@@ -945,6 +982,22 @@ fn recognized_virtual_cable(endpoint: &Endpoint) -> bool {
         || name.contains("virtual audio cable")
 }
 
+fn legacy_16_channel_cable(endpoint: &Endpoint) -> bool {
+    endpoint.flow == EndpointFlow::Render
+        && endpoint
+            .name
+            .trim()
+            .eq_ignore_ascii_case("CABLE In 16ch (VB-Audio Virtual Cable)")
+}
+
+fn standard_vb_cable_input(endpoint: &Endpoint) -> bool {
+    recognized_virtual_cable(endpoint)
+        && endpoint
+            .name
+            .trim()
+            .eq_ignore_ascii_case("CABLE Input (VB-Audio Virtual Cable)")
+}
+
 fn preferred_virtual_cable(endpoints: &[Endpoint]) -> Option<&Endpoint> {
     endpoints
         .iter()
@@ -1363,6 +1416,7 @@ fn wide_null(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audio_switch_core::ConfigStore;
 
     fn endpoint(id: &str, name: &str, flow: EndpointFlow, available: bool) -> Endpoint {
         Endpoint {
@@ -1437,6 +1491,168 @@ mod tests {
         assert_eq!(
             preferred_virtual_cable(&endpoints).map(|endpoint| endpoint.id.as_str()),
             Some("cable-input")
+        );
+    }
+
+    #[test]
+    fn restart_repairs_a_persisted_16_channel_virtual_cable_selection() {
+        let directory = tempfile::tempdir().expect("creating restart test directory");
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+        let endpoints = [
+            endpoint(
+                "cable-16ch",
+                "CABLE In 16ch (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+            endpoint(
+                "cable-input",
+                "CABLE Input (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+        ];
+        let mut stale = AppConfig::default();
+        stale.endpoints.virtual_render = Some("cable-16ch".into());
+        store.save(&stale).expect("saving stale configuration");
+        let mut config = store.load_or_default().expect("loading after restart");
+
+        let correction = repair_legacy_16_channel_selection(&mut config, &endpoints);
+        store.save(&config).expect("saving repaired configuration");
+        let reloaded = store.load_or_default().expect("reloading repair");
+
+        assert_eq!(
+            reloaded.endpoints.virtual_render.as_deref(),
+            Some("cable-input")
+        );
+        assert_eq!(
+            correction,
+            Some(VirtualCableCorrection {
+                previous: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
+                selected: "CABLE Input (VB-Audio Virtual Cable)".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn restart_repairs_an_offline_legacy_endpoint_when_standard_is_online() {
+        let endpoints = [
+            endpoint(
+                "cable-16ch",
+                "CABLE In 16ch (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                false,
+            ),
+            endpoint(
+                "cable-input",
+                "CABLE Input (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+        ];
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("cable-16ch".into());
+
+        let correction = repair_legacy_16_channel_selection(&mut config, &endpoints);
+
+        assert!(correction.is_some());
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("cable-input")
+        );
+    }
+
+    #[test]
+    fn active_legacy_selection_is_identified_for_delayed_standard_input_retry() {
+        let endpoints = [endpoint(
+            "cable-16ch",
+            "CABLE In 16ch (VB-Audio Virtual Cable)",
+            EndpointFlow::Render,
+            true,
+        )];
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("cable-16ch".into());
+
+        assert!(legacy_16_channel_is_selected(&config, &endpoints));
+        assert_eq!(
+            repair_legacy_16_channel_selection(&mut config, &endpoints),
+            None
+        );
+    }
+
+    #[test]
+    fn restart_preserves_an_explicit_alternative_virtual_cable() {
+        let endpoints = [
+            endpoint(
+                "alternative",
+                "Virtual Audio Cable A",
+                EndpointFlow::Render,
+                true,
+            ),
+            endpoint(
+                "cable-input",
+                "CABLE Input (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+        ];
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("alternative".into());
+
+        let correction = repair_legacy_16_channel_selection(&mut config, &endpoints);
+
+        assert_eq!(correction, None);
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("alternative")
+        );
+    }
+
+    #[test]
+    fn restart_preserves_an_alternative_vb_audio_16_channel_cable() {
+        let endpoints = [
+            endpoint(
+                "alternative-16ch",
+                "Studio Cable 16ch (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+            endpoint(
+                "cable-input",
+                "CABLE Input (VB-Audio Virtual Cable)",
+                EndpointFlow::Render,
+                true,
+            ),
+        ];
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("alternative-16ch".into());
+
+        let correction = repair_legacy_16_channel_selection(&mut config, &endpoints);
+
+        assert_eq!(correction, None);
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("alternative-16ch")
+        );
+    }
+
+    #[test]
+    fn restart_keeps_16_channel_selection_when_standard_input_is_offline() {
+        let endpoints = [endpoint(
+            "cable-16ch",
+            "CABLE In 16ch (VB-Audio Virtual Cable)",
+            EndpointFlow::Render,
+            true,
+        )];
+        let mut config = AppConfig::default();
+        config.endpoints.virtual_render = Some("cable-16ch".into());
+
+        let correction = repair_legacy_16_channel_selection(&mut config, &endpoints);
+
+        assert_eq!(correction, None);
+        assert_eq!(
+            config.endpoints.virtual_render.as_deref(),
+            Some("cable-16ch")
         );
     }
 

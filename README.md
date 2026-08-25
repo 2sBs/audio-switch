@@ -105,7 +105,7 @@ npm install --global @elgato/cli@1.7.4
 To build the per-user installer, install Inno Setup 6 and run:
 
 ```powershell
-.\scripts\package-installer.ps1 -Version 0.5.1
+.\scripts\package-installer.ps1 -Version 0.5.2
 ```
 
 Generated packages are written to `dist\` and are not tracked by Git.
@@ -123,7 +123,7 @@ Generated packages are written to `dist\` and are not tracked by Git.
 
 The GitHub Actions workflow checks formatting, tests, and Clippy before building
 the standalone app, installer, Stream Deck package, and SHA-256 checksums. A tag
-matching the Cargo workspace version, such as `v0.5.1`, publishes those files as
+matching the Cargo workspace version, such as `v0.5.2`, publishes those files as
 an immutable GitHub release. Re-running a release succeeds only when every
 published asset still has the expected GitHub SHA-256 digest.
 
