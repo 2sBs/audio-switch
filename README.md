@@ -110,6 +110,18 @@ To build the per-user installer, install Inno Setup 6 and run:
 
 Generated packages are written to `dist\` and are not tracked by Git.
 
+## Website
+
+The static GitHub Pages site lives in `site`. It resolves the newest Windows
+installer through the public GitHub Releases API and falls back to the latest
+release page if a direct download cannot be found.
+
+Preview it locally with:
+
+```powershell
+python -m http.server 4173 --directory site
+```
+
 ## Repository layout
 
 - `crates/audio-switch-core` contains configuration, routing state, IPC, drift
@@ -118,6 +130,7 @@ Generated packages are written to `dist\` and are not tracked by Git.
   autostart integration, and Stream Deck controller.
 - `stream-deck` contains the plugin manifest and source artwork.
 - `installer` and `scripts` contain the release packaging tools.
+- `site` contains the static GitHub Pages landing page.
 
 ## Release process
 

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Audio Switch keeps one microphone input selected in Windows apps while you switch the physical microphone behind it.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Audio Switch">
+  <meta property="og:description" content="One input. Two physical microphones. Switch sources without changing your apps.">
+  <meta property="og:url" content="https://2sbs.github.io/audio-switch/">
+  <meta property="og:image" content="https://2sbs.github.io/audio-switch/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Audio Switch routing diagram showing two physical microphones feeding one virtual cable for games, calls, and recordings.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Audio Switch">
+  <meta name="twitter:description" content="One input. Two physical microphones. Switch sources without changing your apps.">
+  <meta name="twitter:image" content="https://2sbs.github.io/audio-switch/og.png">
+  <meta name="twitter:image:alt" content="Audio Switch routing diagram showing two physical microphones feeding one virtual cable for games, calls, and recordings.">
+  <link rel="canonical" href="https://2sbs.github.io/audio-switch/">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>Audio Switch</title>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="Audio Switch home">
+      <img src="icon.svg" alt="" width="34" height="34">
+      <span>Audio Switch</span>
+    </a>
+    <nav class="site-nav" aria-label="Main navigation">
+      <a href="#how-it-works">How it works</a>
+      <a href="#requirements">Requirements</a>
+      <a href="https://github.com/2sBs/audio-switch">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main-content">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Built for Windows</p>
+        <h1 id="hero-title">One input. Two physical microphones.</h1>
+        <p class="hero-summary">Audio Switch runs in the tray and keeps your apps connected to one virtual input. Switch the physical source with a click, a shortcut, or Stream Deck.</p>
+
+        <div class="hero-actions">
+          <a class="download-button" data-download-link href="https://github.com/2sBs/audio-switch/releases/latest">Download installer</a>
+          <a class="release-link" data-release-link href="https://github.com/2sBs/audio-switch/releases/latest">View <span data-release-version>latest release</span></a>
+        </div>
+        <p class="download-status" data-release-status aria-live="polite">Finding the latest Windows installer...</p>
+
+        <dl class="release-facts">
+          <div>
+            <dt>Release</dt>
+            <dd data-release-version>Latest</dd>
+          </div>
+          <div>
+            <dt>Platform</dt>
+            <dd>Windows x64</dd>
+          </div>
+          <div>
+            <dt>License</dt>
+            <dd>MIT</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="routing-stage">
+        <figure class="routing-window">
+          <figcaption class="window-bar">
+            <span>Audio Switch routing monitor</span>
+            <span class="window-controls" aria-hidden="true">_ &#9633; &times;</span>
+          </figcaption>
+
+          <div class="monitor-body">
+            <div class="monitor-heading">
+              <div>
+                <h2>Microphone route</h2>
+                <p>Applications stay connected while the source changes.</p>
+              </div>
+              <span class="running-status"><span aria-hidden="true">&#9679;</span> Running</span>
+            </div>
+
+            <div class="signal-path" role="img" aria-label="Primary and Secondary microphones feed a stable virtual cable input used by games, calls, and recordings.">
+              <div class="endpoint endpoint-primary">
+                <span class="port-label">Active source / 01</span>
+                <strong>Primary mic</strong>
+                <small>Desk microphone</small>
+              </div>
+              <div class="endpoint endpoint-secondary">
+                <span class="port-label">Ready source / 02</span>
+                <strong>Secondary mic</strong>
+                <small>Headset microphone</small>
+              </div>
+              <span class="route-arrow route-merge" aria-hidden="true">&rarr;</span>
+              <div class="endpoint endpoint-cable">
+                <span class="port-label">Stable endpoint</span>
+                <strong>Virtual cable</strong>
+                <small>Selected once in every app</small>
+              </div>
+              <span class="route-arrow route-output" aria-hidden="true">&rarr;</span>
+              <div class="endpoint endpoint-apps">
+                <span class="port-label">Input never changes</span>
+                <strong>Games, calls<br>and recordings</strong>
+                <small>Discord / OBS / in-game chat</small>
+              </div>
+            </div>
+
+            <div class="control-strip" role="group" aria-label="Ways to switch microphones">
+              <span class="control-label">Switch with</span>
+              <span class="control-item control-active">Tray</span>
+              <span class="control-item">Hotkey</span>
+              <span class="control-item">Stream Deck</span>
+            </div>
+            <p class="routing-note"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd> toggles Primary and Secondary from anywhere in Windows.</p>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="feature-table" id="how-it-works" aria-labelledby="how-title">
+      <h2 class="visually-hidden" id="how-title">How Audio Switch works</h2>
+      <article class="feature-row">
+        <p class="step-label">01 / Set up once</p>
+        <h3>Assign device roles</h3>
+        <p>Pick Primary and Secondary microphones, your virtual cable, and optional playback devices.</p>
+      </article>
+      <article class="feature-row">
+        <p class="step-label">02 / Control locally</p>
+        <h3>Tray, hotkey, or Stream Deck</h3>
+        <p>Switch from the taskbar, press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd>, or install the optional Stream Deck plugin.</p>
+      </article>
+      <article class="feature-row">
+        <p class="step-label">03 / Stay connected</p>
+        <h3>Apps use one stable input</h3>
+        <p>Games, calls, and recording tools keep the same selected device while the physical source changes.</p>
+      </article>
+    </section>
+
+    <section class="setup" id="requirements" aria-labelledby="setup-title">
+      <div class="setup-heading">
+        <p class="eyebrow">Guided setup</p>
+        <h2 id="setup-title">Install it.<br>Set the route.<br>Leave apps alone.</h2>
+      </div>
+      <ol class="setup-list">
+        <li>
+          <span>01</span>
+          <p>Install a virtual audio cable such as <a href="https://vb-audio.com/Cable/">VB-CABLE</a> from its publisher.</p>
+        </li>
+        <li>
+          <span>02</span>
+          <p>Run Audio Switch and choose both physical microphones.</p>
+        </li>
+        <li>
+          <span>03</span>
+          <p>Select the virtual cable as the microphone in your apps.</p>
+        </li>
+        <li>
+          <span>04</span>
+          <p>Switch physical sources without revisiting app settings.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="secondary-features" aria-label="Additional features">
+      <article>
+        <p class="step-label">Playback</p>
+        <h2>Mirror a second output</h2>
+        <p>Send audio from your Primary playback device to Secondary while both endpoints are available.</p>
+      </article>
+      <article>
+        <p class="step-label">Local by design</p>
+        <h2>No account or telemetry</h2>
+        <p>Audio routing and settings stay on your PC. There is no hosted service behind the app.</p>
+      </article>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div>
+      <strong>Audio Switch</strong>
+      <p>x64 Windows 10 version 1809 or newer, including Windows 11.</p>
+    </div>
+    <nav aria-label="Footer navigation">
+      <a href="https://github.com/2sBs/audio-switch/releases/latest">Releases</a>
+      <a href="https://github.com/2sBs/audio-switch/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/2sBs/audio-switch/blob/main/LICENSE">MIT License</a>
+    </nav>
+    <p class="installer-note">Release binaries are not code-signed. Windows SmartScreen may warn before launch. Check the published SHA-256 checksum if you download the installer.</p>
+  </footer>
+
+  <noscript>
+    <p class="noscript-note">JavaScript is off, so the download button opens the latest GitHub release instead of starting the installer directly.</p>
+  </noscript>
+  <script src="site.js" defer></script>
+</body>
+</html>
