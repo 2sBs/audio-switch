@@ -93,19 +93,31 @@ impl WasapiBackend {
             Direction::Render => EndpointFlow::Render,
             Direction::Capture => EndpointFlow::Capture,
         };
+        // Fails when the direction has no default device, for example with no
+        // speakers connected.
+        let system_default = enumerator
+            .get_default_device(&direction)
+            .and_then(|device| device.get_id())
+            .ok();
 
         collection
             .into_iter()
             .map(|device| {
                 let device = device.map_err(audio_backend_error)?;
+                let id = device.get_id().map_err(audio_backend_error)?;
                 Ok(Endpoint {
-                    id: device.get_id().map_err(audio_backend_error)?,
+                    system_default: system_default.as_ref() == Some(&id),
                     name: device.get_friendlyname().map_err(audio_backend_error)?,
                     flow,
                     available: matches!(
                         device.get_state().map_err(audio_backend_error)?,
                         DeviceState::Active
                     ),
+                    // Endpoints on one audio adapter share its interface name.
+                    // A virtual cable's input and output endpoints both belong
+                    // to the cable driver's adapter.
+                    device_id: device.get_interface_friendlyname().ok(),
+                    id,
                 })
             })
             .collect()

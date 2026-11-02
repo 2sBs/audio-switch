@@ -40,12 +40,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ["list"] => {
             for endpoint in backend.enumerate_endpoints()? {
                 println!(
-                    "{:?}\t{}\t{}\t{}",
+                    "{:?}\t{}{}\t{}\t{}",
                     endpoint.flow,
                     if endpoint.available {
                         "active"
                     } else {
                         "absent"
+                    },
+                    if endpoint.system_default {
+                        ", default"
+                    } else {
+                        ""
                     },
                     endpoint.name,
                     endpoint.id

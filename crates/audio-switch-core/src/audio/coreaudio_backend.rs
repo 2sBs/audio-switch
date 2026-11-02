@@ -28,7 +28,8 @@ use objc2_core_audio::{
     kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
     kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID, kAudioDevicePropertyIsHidden,
     kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreamConfiguration,
-    kAudioDevicePropertyStreams, kAudioHardwarePropertyDevices,
+    kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultInputDevice,
+    kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
     kAudioHardwarePropertyTranslateUIDToDevice, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
     kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject, kAudioObjectUnknown,
@@ -115,10 +116,13 @@ impl AudioBackend for CoreAudioBackend {
             ),
             "list audio devices",
         )?;
+        let system_output = system_default_device(kAudioHardwarePropertyDefaultOutputDevice);
+        let system_input = system_default_device(kAudioHardwarePropertyDefaultInputDevice);
         let mut endpoints = Vec::new();
         for device in devices {
             // Devices can disappear between listing and inspection.
-            if let Ok(Some(device_endpoints)) = describe_device(device) {
+            if let Ok(Some(device_endpoints)) = describe_device(device, system_output, system_input)
+            {
                 endpoints.extend(device_endpoints);
             }
         }
@@ -636,7 +640,22 @@ fn cf_key(key: &CStr) -> Retained<NSString> {
     NSString::from_str(key.to_str().expect("Core Audio keys are ASCII"))
 }
 
-fn describe_device(device: AudioObjectID) -> Result<Option<Vec<Endpoint>>, AudioError> {
+/// The system's default device for one direction, if there is one.
+fn system_default_device(selector: AudioObjectPropertySelector) -> Option<AudioObjectID> {
+    get_property::<AudioObjectID>(
+        kAudioObjectSystemObject as AudioObjectID,
+        address(selector, kAudioObjectPropertyScopeGlobal),
+        "read default device",
+    )
+    .ok()
+    .filter(|device| *device != kAudioObjectUnknown)
+}
+
+fn describe_device(
+    device: AudioObjectID,
+    system_output: Option<AudioObjectID>,
+    system_input: Option<AudioObjectID>,
+) -> Result<Option<Vec<Endpoint>>, AudioError> {
     let global = kAudioObjectPropertyScopeGlobal;
     let id = get_string(device, address(kAudioDevicePropertyDeviceUID, global))?;
     let hidden = get_property::<u32>(device, address(kAudioDevicePropertyIsHidden, global), "")
@@ -651,9 +670,17 @@ fn describe_device(device: AudioObjectID) -> Result<Option<Vec<Endpoint>>, Audio
         "read device state",
     )? != 0;
     let mut endpoints = Vec::with_capacity(2);
-    for (scope, flow) in [
-        (kAudioObjectPropertyScopeOutput, EndpointFlow::Render),
-        (kAudioObjectPropertyScopeInput, EndpointFlow::Capture),
+    for (scope, flow, system_default) in [
+        (
+            kAudioObjectPropertyScopeOutput,
+            EndpointFlow::Render,
+            system_output,
+        ),
+        (
+            kAudioObjectPropertyScopeInput,
+            EndpointFlow::Capture,
+            system_input,
+        ),
     ] {
         if channel_count(device, scope)? > 0 {
             endpoints.push(Endpoint {
@@ -661,6 +688,9 @@ fn describe_device(device: AudioObjectID) -> Result<Option<Vec<Endpoint>>, Audio
                 name: name.clone(),
                 flow,
                 available,
+                system_default: system_default == Some(device),
+                // A Core Audio device carries both directions under one UID.
+                device_id: Some(id.clone()),
             });
         }
     }

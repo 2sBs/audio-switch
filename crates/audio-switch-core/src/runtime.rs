@@ -2,10 +2,11 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::audio::{AudioBackend, AudioError, CueKind, Endpoint};
+use crate::audio::{AudioBackend, AudioError, CueKind, Endpoint, EndpointFlow};
 use crate::config::{AppConfig, ConfigError, ConfigStore};
 use crate::state::{
     ActiveMic, AppState, DesiredTransition, EndpointAvailability, RouteStatus, RoutingStateMachine,
+    SystemAudio,
 };
 
 const ROUTE_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -30,16 +31,7 @@ pub struct RoutingController<B: AudioBackend> {
 
 impl<B: AudioBackend> RoutingController<B> {
     pub fn new(backend: B, store: ConfigStore, config: AppConfig) -> Self {
-        let machine = RoutingStateMachine::new(
-            config.active_mic,
-            EndpointAvailability {
-                primary_mic: false,
-                secondary_mic: false,
-                virtual_mic: false,
-                primary_render: false,
-                secondary_render: false,
-            },
-        );
+        let machine = RoutingStateMachine::new(config.active_mic, EndpointAvailability::default());
         Self {
             backend,
             store,
@@ -61,6 +53,17 @@ impl<B: AudioBackend> RoutingController<B> {
         &self.backend
     }
 
+    /// Which configured devices were present at the last refresh.
+    pub fn availability(&self) -> EndpointAvailability {
+        self.machine.availability()
+    }
+
+    /// How the connected devices differ from the configured setup; see
+    /// [`away_summary`](crate::away_summary).
+    pub fn away_summary(&self) -> Vec<String> {
+        crate::away_summary(&self.config, self.state(), self.availability())
+    }
+
     pub fn start(&mut self) -> Result<(), ControllerError> {
         self.refresh_endpoints()
     }
@@ -69,9 +72,11 @@ impl<B: AudioBackend> RoutingController<B> {
         let endpoints = self.backend.enumerate_endpoints()?;
         let now = Instant::now();
         let had_route_error = route_has_error(self.machine.state());
+        self.machine
+            .update_system_audio(self.system_audio(&endpoints));
         let mut transitions = self
             .machine
-            .update_availability(self.availability(&endpoints));
+            .update_availability(self.availability_of(&endpoints));
         let retry_attempted = transitions.is_empty() && now >= self.next_error_retry;
         if retry_attempted {
             transitions = self.machine.retry_failed_routes();
@@ -133,16 +138,7 @@ impl<B: AudioBackend> RoutingController<B> {
         if mirror_changed {
             let _ = self.backend.stop_mirror();
         }
-        self.machine = RoutingStateMachine::new(
-            config.active_mic,
-            EndpointAvailability {
-                primary_mic: false,
-                secondary_mic: false,
-                virtual_mic: false,
-                primary_render: false,
-                secondary_render: false,
-            },
-        );
+        self.machine = RoutingStateMachine::new(config.active_mic, EndpointAvailability::default());
         if !microphone_changed && microphone_was_routing {
             self.machine.mic_started();
         }
@@ -158,20 +154,52 @@ impl<B: AudioBackend> RoutingController<B> {
         let _ = self.backend.stop_mirror();
     }
 
-    fn availability(&self, endpoints: &[Endpoint]) -> EndpointAvailability {
+    fn availability_of(&self, endpoints: &[Endpoint]) -> EndpointAvailability {
         let available = |configured: &Option<String>| {
-            configured.as_ref().is_some_and(|id| {
-                endpoints
-                    .iter()
-                    .any(|endpoint| endpoint.available && endpoint.id.eq_ignore_ascii_case(id))
-            })
+            endpoints
+                .iter()
+                .any(|endpoint| endpoint.available && is_configured(endpoint, configured))
         };
+        let primary_render = &self.config.endpoints.primary_render;
         EndpointAvailability {
             primary_mic: available(&self.config.endpoints.primary_capture),
             secondary_mic: available(&self.config.endpoints.secondary_capture),
             virtual_mic: available(&self.config.endpoints.virtual_render),
-            primary_render: available(&self.config.endpoints.primary_render),
+            primary_render: available(primary_render),
             secondary_render: available(&self.config.endpoints.secondary_render),
+            primary_render_is_system_output: system_default(endpoints, EndpointFlow::Render)
+                .is_some_and(|output| is_configured(output, primary_render)),
+        }
+    }
+
+    /// Names the system's default devices where they differ from the
+    /// configuration. Reports nothing for a role that is not configured yet.
+    fn system_audio(&self, endpoints: &[Endpoint]) -> SystemAudio {
+        let configured = &self.config.endpoints;
+        let other_output = system_default(endpoints, EndpointFlow::Render)
+            .filter(|output| {
+                configured.primary_render.is_some()
+                    && !is_configured(output, &configured.primary_render)
+            })
+            .map(|output| output.name.clone());
+        // Apps record from the cable's input side, which belongs to the same
+        // device as the output Audio Switch writes to.
+        let cable_device = endpoints
+            .iter()
+            .find(|endpoint| {
+                endpoint.flow == EndpointFlow::Render
+                    && is_configured(endpoint, &configured.virtual_render)
+            })
+            .and_then(|cable| cable.device_id.as_ref());
+        let other_input = system_default(endpoints, EndpointFlow::Capture)
+            .filter(|input| {
+                configured.virtual_render.is_some()
+                    && (cable_device.is_none() || input.device_id.as_ref() != cable_device)
+            })
+            .map(|input| input.name.clone());
+        SystemAudio {
+            other_output,
+            other_input,
         }
     }
 
@@ -237,6 +265,18 @@ impl<B: AudioBackend> RoutingController<B> {
     }
 }
 
+fn is_configured(endpoint: &Endpoint, configured: &Option<String>) -> bool {
+    configured
+        .as_ref()
+        .is_some_and(|id| endpoint.id.eq_ignore_ascii_case(id))
+}
+
+fn system_default(endpoints: &[Endpoint], flow: EndpointFlow) -> Option<&Endpoint> {
+    endpoints
+        .iter()
+        .find(|endpoint| endpoint.flow == flow && endpoint.system_default)
+}
+
 fn route_has_error(state: &AppState) -> bool {
     matches!(state.mic_status, RouteStatus::Error { .. })
         || matches!(state.mirror_status, RouteStatus::Error { .. })
@@ -276,6 +316,9 @@ mod tests {
                 name: id.clone().unwrap(),
                 flow,
                 available: true,
+                // Docked: the system plays through the Primary playback device.
+                system_default: id == &config.endpoints.primary_render,
+                device_id: id.clone(),
             };
             Self {
                 calls: Mutex::new(Vec::new()),
@@ -438,6 +481,8 @@ mod tests {
                 name: "new-secondary".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             });
         controller.apply_config(updated).unwrap();
 
@@ -494,5 +539,43 @@ mod tests {
             1
         );
         assert!(controller.next_error_retry > Instant::now());
+    }
+
+    #[test]
+    fn undocked_laptop_pauses_the_mirror_and_reports_the_system_devices() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        let laptop = |id: &str, flow| Endpoint {
+            id: id.into(),
+            name: format!("Laptop {id}"),
+            flow,
+            available: true,
+            system_default: true,
+            device_id: Some(id.into()),
+        };
+        {
+            let mut endpoints = backend.endpoints.lock().unwrap();
+            // Only the virtual cable and the built-in devices remain.
+            endpoints
+                .retain(|endpoint| Some(&endpoint.id) == config.endpoints.virtual_render.as_ref());
+            endpoints.push(laptop("speakers", EndpointFlow::Render));
+            endpoints.push(laptop("microphone", EndpointFlow::Capture));
+        }
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+        let mut controller = RoutingController::new(backend, store, config);
+
+        controller.start().unwrap();
+
+        let state = controller.state();
+        assert!(matches!(state.mirror_status, RouteStatus::Waiting { .. }));
+        assert!(matches!(state.mic_status, RouteStatus::Waiting { .. }));
+        assert_eq!(
+            state.system_audio,
+            SystemAudio {
+                other_output: Some("Laptop speakers".into()),
+                other_input: Some("Laptop microphone".into()),
+            }
+        );
     }
 }

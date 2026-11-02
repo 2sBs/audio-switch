@@ -355,12 +355,16 @@ mod tests {
                 name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             },
             Endpoint {
                 id: "cable-input".into(),
                 name: "CABLE Input (VB-Audio Virtual Cable)".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             },
         ];
 
@@ -382,6 +386,8 @@ mod tests {
             name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
             flow: EndpointFlow::Render,
             available: true,
+            system_default: false,
+            device_id: None,
         }];
         let refreshed = [
             initial[0].clone(),
@@ -390,6 +396,8 @@ mod tests {
                 name: "CABLE Input (VB-Audio Virtual Cable)".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             },
         ];
 

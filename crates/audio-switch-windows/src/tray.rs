@@ -24,7 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CW_USEDEFAULT, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetMessageW, GetSystemMetrics, HICON, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
-    MB_SETFOREGROUND, MB_TOPMOST, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
+    MB_SETFOREGROUND, MB_TOPMOST, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
     PostQuitMessage, RegisterClassW, SM_CXSMICON, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
@@ -49,6 +49,7 @@ const MENU_EXIT: usize = 1099;
 
 const PRIMARY_ICON: &[u8] = include_bytes!("../assets/tray/primary.ico");
 const SECONDARY_ICON: &[u8] = include_bytes!("../assets/tray/secondary.ico");
+const AWAY_ICON: &[u8] = include_bytes!("../assets/tray/away.ico");
 const WARNING_ICON: &[u8] = include_bytes!("../assets/tray/warning.ico");
 
 static CONTEXT: OnceLock<Mutex<TrayContext>> = OnceLock::new();
@@ -831,11 +832,17 @@ fn show_status(window: HWND) {
             ActiveMic::Primary => &labels.primary,
             ActiveMic::Secondary => &labels.secondary,
         };
-        format!(
+        let mut text = format!(
             "Active microphone: {active_label}\r\nMicrophone route: {}\r\nPlayback mirror: {}",
             route_status_text(&state.mic_status),
             route_status_text(&state.mirror_status)
-        )
+        );
+        let away = context.controller.away_summary();
+        if !away.is_empty() {
+            text.push_str("\r\n\r\nAway from your setup:\r\n");
+            text.push_str(&away.join("\r\n"));
+        }
+        text
     };
     let wide = wide_null(&text);
     unsafe {
@@ -863,17 +870,11 @@ fn show_menu(window: HWND) {
         Ok(menu) => menu,
         Err(_) => return,
     };
-    let (active, primary_label, secondary_label) = CONTEXT
+    let menu_state = CONTEXT
         .get()
-        .map(|context| {
-            let context = context.lock().expect("tray mutex poisoned");
-            (
-                context.controller.state().active_mic,
-                context.controller.config().labels.primary.clone(),
-                context.controller.config().labels.secondary.clone(),
-            )
-        })
-        .unwrap_or((ActiveMic::Primary, "Primary".into(), "Secondary".into()));
+        .map(|context| MenuState::of(&context.lock().expect("tray mutex poisoned").controller))
+        .unwrap_or_default();
+    let active = menu_state.active;
     let primary_flags = MF_STRING
         | if active == ActiveMic::Primary {
             MF_CHECKED
@@ -886,9 +887,23 @@ fn show_menu(window: HWND) {
         } else {
             Default::default()
         };
-    let primary_label = wide_null(&format!("{primary_label} microphone"));
-    let secondary_label = wide_null(&format!("{secondary_label} microphone"));
+    let primary_label = wide_null(&menu_state.mic_label(ActiveMic::Primary));
+    let secondary_label = wide_null(&menu_state.mic_label(ActiveMic::Secondary));
+    let away: Vec<Vec<u16>> = menu_state.away.iter().map(|line| wide_null(line)).collect();
     unsafe {
+        if !away.is_empty() {
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, w!("Away from your setup")).ok();
+            for line in &away {
+                AppendMenuW(
+                    menu,
+                    MF_STRING | MF_GRAYED,
+                    0,
+                    windows::core::PCWSTR(line.as_ptr()),
+                )
+                .ok();
+            }
+            AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()).ok();
+        }
         AppendMenuW(
             menu,
             primary_flags,
@@ -930,22 +945,17 @@ fn add_or_update_icon(window: HWND, add: bool) -> Result<()> {
         .map(|context| {
             let context = context.lock().expect("tray mutex poisoned");
             let state = context.controller.state();
-            let warning = !matches!(state.mic_status, RouteStatus::Routing)
-                || !matches!(state.mirror_status, RouteStatus::Routing);
+            let away = !context.controller.away_summary().is_empty();
             let labels = &context.controller.config().labels;
             let active_label = match state.active_mic {
                 ActiveMic::Primary => &labels.primary,
                 ActiveMic::Secondary => &labels.secondary,
             };
-            let icon_bytes = if warning {
-                WARNING_ICON
-            } else {
-                match state.active_mic {
-                    ActiveMic::Primary => PRIMARY_ICON,
-                    ActiveMic::Secondary => SECONDARY_ICON,
-                }
-            };
-            (format!("Audio Switch - {active_label} mic"), icon_bytes)
+            let mut tooltip = format!("Audio Switch - {active_label} mic");
+            if away {
+                tooltip.push_str("\nAway from your setup");
+            }
+            (tooltip, tray_icon(state, away))
         })
         .unwrap_or_else(|| ("Audio Switch".into(), WARNING_ICON));
     let icon = load_tray_icon(icon_bytes)?;
@@ -956,6 +966,60 @@ fn add_or_update_icon(window: HWND, add: bool) -> Result<()> {
         return Err(anyhow!("Windows rejected the tray icon operation"));
     }
     Ok(())
+}
+
+/// A warning only for faults. Being away from the configured devices, such as
+/// an undocked laptop, is expected, so it gets a neutral icon instead.
+fn tray_icon(state: &audio_switch_core::AppState, away: bool) -> &'static [u8] {
+    let is_error = |status: &RouteStatus| matches!(status, RouteStatus::Error { .. });
+    if is_error(&state.mic_status) || is_error(&state.mirror_status) {
+        WARNING_ICON
+    } else if away {
+        AWAY_ICON
+    } else {
+        match state.active_mic {
+            ActiveMic::Primary => PRIMARY_ICON,
+            ActiveMic::Secondary => SECONDARY_ICON,
+        }
+    }
+}
+
+/// What the tray menu needs, copied out so the menu runs without the lock.
+#[derive(Default)]
+struct MenuState {
+    active: ActiveMic,
+    labels: audio_switch_core::DeviceLabels,
+    missing: [bool; 2],
+    away: Vec<String>,
+}
+
+impl MenuState {
+    fn of(controller: &RoutingController<WasapiBackend>) -> Self {
+        let endpoints = &controller.config().endpoints;
+        let availability = controller.availability();
+        Self {
+            active: controller.state().active_mic,
+            labels: controller.config().labels.clone(),
+            missing: [
+                endpoints.primary_capture.is_some() && !availability.primary_mic,
+                endpoints.secondary_capture.is_some() && !availability.secondary_mic,
+            ],
+            away: controller.away_summary(),
+        }
+    }
+
+    /// The tab right-aligns the note, like a shortcut.
+    fn mic_label(&self, mic: ActiveMic) -> String {
+        let (label, missing) = match mic {
+            ActiveMic::Primary => (&self.labels.primary, self.missing[0]),
+            ActiveMic::Secondary => (&self.labels.secondary, self.missing[1]),
+        };
+        if missing {
+            format!("{label} microphone\tnot connected")
+        } else {
+            format!("{label} microphone")
+        }
+    }
 }
 
 fn load_tray_icon(ico: &[u8]) -> Result<HICON> {
@@ -1109,6 +1173,20 @@ mod tests {
 
         assert_eq!(refresh_key, settings_key);
         assert!(underlying_audio_error(&operation_error).is_none());
+    }
+
+    #[test]
+    fn only_faults_show_the_warning_icon() {
+        let mut state = audio_switch_core::AppState::new(ActiveMic::Primary);
+        state.mirror_status = RouteStatus::Waiting {
+            reason: "waiting for the primary playback device".into(),
+        };
+        assert_eq!(tray_icon(&state, true), AWAY_ICON);
+
+        state.mic_status = RouteStatus::Error {
+            message: "the virtual cable is not connected".into(),
+        };
+        assert_eq!(tray_icon(&state, true), WARNING_ICON);
     }
 
     #[test]

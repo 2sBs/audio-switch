@@ -1424,6 +1424,8 @@ mod tests {
             name: name.into(),
             flow,
             available,
+            system_default: false,
+            device_id: None,
         }
     }
 

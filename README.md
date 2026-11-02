@@ -55,6 +55,12 @@ Audio Switch preserves the selected route if the Secondary device disconnects.
 It waits for that device and resumes the route when it returns instead of
 silently falling back to Primary.
 
+Being away from your setup is normal. When a configured device is missing, or
+the system uses other devices such as laptop speakers or Bluetooth earbuds, the
+icon changes to a neutral away state and the menu says what differs. Mirroring
+pauses until the system output is the Primary playback device again. The
+warning icon is reserved for faults, such as a missing virtual cable.
+
 Only one tray app can run in a Windows session. The optional Stream Deck plugin
 controls that running app over a session-local named pipe. It does not include
 or launch another tray host. If the app is unavailable, the key displays
@@ -114,10 +120,13 @@ Generated packages are written to `dist\` and are not tracked by Git.
 
 ### macOS (in development)
 
-The macOS app is a SwiftUI menu bar app over the same Rust core. Its menu,
-Settings, and setup are placeholders for now. It needs macOS 14.2 or newer,
-Xcode 16 or newer, Rust from [rustup](https://rustup.rs), and a virtual audio
-driver such as [BlackHole](https://existential.audio/blackhole/).
+The macOS app is a SwiftUI menu bar app over the same Rust core, with a setup
+wizard, Settings, a global switch shortcut (`⌃⇧F11` by default), and an open at
+login option. It needs macOS 14.2 or newer, Xcode 16 or newer, Rust from
+[rustup](https://rustup.rs), and a virtual audio driver such as
+[BlackHole](https://existential.audio/blackhole/). Settings are stored in
+`~/Library/Application Support/AudioSwitch/settings.json`. Release packaging and
+updates are not built yet.
 
 ```sh
 open macos/AudioSwitch.xcodeproj
@@ -125,10 +134,11 @@ open macos/AudioSwitch.xcodeproj
 
 Building the app runs `scripts/build-macos-core.sh`, which compiles
 `audio-switch-ffi` and regenerates the Swift bindings in `macos/Generated`.
-Builds are ad-hoc signed, so macOS asks for microphone and audio capture access
-again after each rebuild. To keep those permissions, set `DEVELOPMENT_TEAM` and
-`CODE_SIGN_IDENTITY = Apple Development` in `macos/Local.xcconfig`, which Git
-ignores.
+Pass `--setup` to the app executable to open setup directly. Debug builds do
+not change the login item. Builds are ad-hoc signed, so macOS asks for
+microphone and audio capture access again after each rebuild. To keep those
+permissions, set `DEVELOPMENT_TEAM` and `CODE_SIGN_IDENTITY = Apple Development`
+in `macos/Local.xcconfig`, which Git ignores.
 
 The Windows app crate does not build on macOS, so check the shared crates
 directly:

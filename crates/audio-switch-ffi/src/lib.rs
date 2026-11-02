@@ -16,7 +16,8 @@ use audio_switch_core::config::ConfigError;
 use audio_switch_core::control::{self, ControlError};
 use audio_switch_core::ipc::{ControlCommand, ControlMessage};
 use audio_switch_core::{
-    ActiveMic, AppConfig, AppState, ConfigStore, ControllerError, DeviceLabels, RoutingController,
+    ActiveMic, AppConfig, AppState, ConfigStore, ControllerError, DeviceLabels,
+    EndpointAvailability, RoutingController,
 };
 
 uniffi::setup_scaffolding!();
@@ -60,11 +61,16 @@ impl From<ControlError> for CoreError {
     }
 }
 
-/// What the UI shows: the routing state and the user's names for the roles.
+/// What the UI shows: the routing state, which configured devices are
+/// present, and the user's names for the roles.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Snapshot {
     pub state: AppState,
+    pub availability: EndpointAvailability,
     pub labels: DeviceLabels,
+    /// How the connected devices differ from the setup, one sentence per line.
+    /// Empty at the configured setup.
+    pub away: Vec<String>,
 }
 
 /// Receives every state change, in order, from background threads.
@@ -139,10 +145,17 @@ impl AppCore {
     }
 
     /// Saves `config` and restarts only the routes whose devices changed.
+    /// The live microphone choice is kept: only `toggle_mic` and `select_mic`
+    /// change it, so a settings edit made after a hotkey switch cannot undo it.
     pub fn apply_config(&self, config: AppConfig) -> Result<(), CoreError> {
-        self.session
-            .run(|controller| controller.apply_config(config))
+        self.session.apply_config(config)
     }
+}
+
+/// Fresh settings for setup to start from.
+#[uniffi::export]
+pub fn default_config() -> AppConfig {
+    AppConfig::default()
 }
 
 /// The routing controller plus the last snapshot sent to the observer, behind
@@ -161,7 +174,9 @@ impl<B: AudioBackend> Inner<B> {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             state: self.controller.state().clone(),
+            availability: self.controller.availability(),
             labels: self.controller.config().labels.clone(),
+            away: self.controller.away_summary(),
         }
     }
 }
@@ -179,6 +194,13 @@ impl<B: AudioBackend> Session<B> {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner<B>> {
         self.inner.lock().expect("session mutex poisoned")
+    }
+
+    fn apply_config(&self, mut config: AppConfig) -> Result<(), CoreError> {
+        self.run(|controller| {
+            config.active_mic = controller.state().active_mic;
+            controller.apply_config(config)
+        })
     }
 
     /// Runs one controller operation and notifies the observer if the
@@ -239,7 +261,7 @@ fn handle_control_command<B: AudioBackend>(
     });
     match result {
         Ok(()) => {
-            let Snapshot { state, labels } = session.lock().snapshot();
+            let Snapshot { state, labels, .. } = session.lock().snapshot();
             ControlMessage::State {
                 request_id,
                 state,
@@ -307,6 +329,8 @@ mod tests {
                 name: id.into(),
                 flow,
                 available: true,
+                system_default: false,
+                device_id: None,
             })
             .into(),
         );
@@ -334,6 +358,22 @@ mod tests {
             "an unchanged refresh is not republished"
         );
         assert_eq!(published[1].state.active_mic, ActiveMic::Secondary);
+    }
+
+    #[test]
+    fn applying_settings_keeps_the_live_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, _) = session(&directory);
+        let stale = session.lock().controller.config().clone();
+        session.run(RoutingController::toggle_mic).unwrap();
+
+        let mut edited = stale;
+        edited.labels.primary = "Desk".into();
+        session.apply_config(edited).unwrap();
+
+        let snapshot = session.lock().snapshot();
+        assert_eq!(snapshot.state.active_mic, ActiveMic::Secondary);
+        assert_eq!(snapshot.labels.primary, "Desk");
     }
 
     #[test]

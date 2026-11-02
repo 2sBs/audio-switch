@@ -5,7 +5,7 @@ from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 ICON_DIR = ROOT / "crates" / "audio-switch-windows" / "assets" / "tray"
-ICON_NAMES = ("primary", "secondary", "warning")
+ICON_NAMES = ("primary", "secondary", "away", "warning")
 CANVAS_SIZE = 256
 PADDING = 18
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
