@@ -1,0 +1,12 @@
+[package]
+name = "uniffi-bindgen"
+version.workspace = true
+description = "Generates the Swift bindings for audio-switch-ffi"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+uniffi = { workspace = true, features = ["cli"] }

@@ -1,5 +1,8 @@
 /target/
 /dist/
+/macos/Generated/
+/macos/Local.xcconfig
+xcuserdata/
 /stream-deck/**/*.exe
 /stream-deck/**/imgs/plugin*.png
 *.log

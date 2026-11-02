@@ -13,6 +13,11 @@ rtrb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uniffi = { workspace = true, optional = true }
+
+[features]
+# Derives Swift bindings for the shared domain types (macOS app).
+uniffi = ["dep:uniffi"]
 
 [target.'cfg(windows)'.dependencies]
 wasapi.workspace = true

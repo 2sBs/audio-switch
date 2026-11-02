@@ -11,6 +11,7 @@ pub const CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct EndpointIds {
     pub primary_render: Option<String>,
     pub secondary_render: Option<String>,
@@ -21,6 +22,7 @@ pub struct EndpointIds {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct DeviceLabels {
     pub primary: String,
     pub secondary: String,
@@ -37,6 +39,7 @@ impl Default for DeviceLabels {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HotkeyConfig {
     pub modifiers: Vec<String>,
     pub key: String,
@@ -55,6 +58,7 @@ impl Default for HotkeyConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub mirror_buffer_ms: u32,
@@ -65,6 +69,7 @@ pub struct AudioConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum UpdatePolicy {
     #[default]
     Automatic,
@@ -86,6 +91,7 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AppConfig {
     pub version: u32,
     pub endpoints: EndpointIds,

@@ -5,12 +5,14 @@ use crate::state::ActiveMic;
 use super::CueKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum EndpointFlow {
     Render,
     Capture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Endpoint {
     pub id: String,
     pub name: String,

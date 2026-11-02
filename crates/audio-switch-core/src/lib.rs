@@ -1,5 +1,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
 pub mod audio;
 pub mod config;
 pub mod control;

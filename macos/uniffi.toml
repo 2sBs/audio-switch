@@ -1,0 +1,10 @@
+# Both crates' generated Swift files import one combined C module, declared in
+# the generated module.modulemap. Each crate keeps its own header file.
+[defaults.bindings.swift]
+ffi_module_name = "AudioSwitchFFI"
+
+[crates.audio_switch_core.bindings.swift]
+ffi_module_filename = "audio_switch_coreFFI"
+
+[crates.audio_switch_ffi.bindings.swift]
+ffi_module_filename = "audio_switch_ffiFFI"

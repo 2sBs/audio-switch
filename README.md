@@ -78,6 +78,8 @@ values before attaching files to a public issue.
 
 ## Build from source
 
+### Windows
+
 Install the stable Rust toolchain with the MSVC target and Visual Studio Build
 Tools for C++ desktop development. The repository pins the required Rust
 components in `rust-toolchain.toml`.
@@ -110,6 +112,37 @@ To build the per-user installer, install Inno Setup 6 and run:
 
 Generated packages are written to `dist\` and are not tracked by Git.
 
+### macOS (in development)
+
+The macOS app is a SwiftUI menu bar app over the same Rust core. Its menu,
+Settings, and setup are placeholders for now. It needs macOS 14.2 or newer,
+Xcode 16 or newer, Rust from [rustup](https://rustup.rs), and a virtual audio
+driver such as [BlackHole](https://existential.audio/blackhole/).
+
+```sh
+open macos/AudioSwitch.xcodeproj
+```
+
+Building the app runs `scripts/build-macos-core.sh`, which compiles
+`audio-switch-ffi` and regenerates the Swift bindings in `macos/Generated`.
+Builds are ad-hoc signed, so macOS asks for microphone and audio capture access
+again after each rebuild. To keep those permissions, set `DEVELOPMENT_TEAM` and
+`CODE_SIGN_IDENTITY = Apple Development` in `macos/Local.xcconfig`, which Git
+ignores.
+
+The Windows app crate does not build on macOS, so check the shared crates
+directly:
+
+```sh
+crates=(-p audio-switch-core -p audio-switch-ffi -p audio-switch-stream-deck -p uniffi-bindgen)
+cargo test --locked "${crates[@]}"
+cargo clippy --locked "${crates[@]}" --all-targets -- -D warnings
+```
+
+To check audio routes on real hardware without the app, run
+`cargo run -p audio-switch-core --example route_spike -- list`. The example's
+header lists its other commands.
+
 ## Website
 
 The static GitHub Pages site lives in `site`. It resolves the newest Windows
@@ -131,6 +164,9 @@ python -m http.server 4173 --directory site
 - `crates/audio-switch-windows` contains the Windows tray app, native setup and
   settings UI, autostart integration, and updater.
 - `crates/audio-switch-stream-deck` contains the Stream Deck plugin controller.
+- `crates/audio-switch-ffi` contains the macOS app core and its Swift bindings;
+  `crates/uniffi-bindgen` generates those bindings.
+- `macos` contains the SwiftUI app and its Xcode project.
 - `stream-deck` contains the plugin manifest and source artwork.
 - `installer` and `scripts` contain the release packaging tools.
 - `site` contains the static GitHub Pages landing page.

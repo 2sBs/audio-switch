@@ -1,0 +1,234 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A51D00000000000000000101 /* audio_switch_core.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51D00000000000000000201 /* audio_switch_core.swift */; };
+		A51D00000000000000000102 /* audio_switch_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51D00000000000000000202 /* audio_switch_ffi.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A51D00000000000000000200 /* Audio Switch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Audio Switch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A51D00000000000000000201 /* audio_switch_core.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = audio_switch_core.swift; sourceTree = "<group>"; };
+		A51D00000000000000000202 /* audio_switch_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = audio_switch_ffi.swift; sourceTree = "<group>"; };
+		A51D00000000000000000203 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A51D00000000000000000204 /* AudioSwitch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AudioSwitch.entitlements; sourceTree = "<group>"; };
+		A51D00000000000000000205 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		A51D00000000000000000206 /* uniffi.toml */ = {isa = PBXFileReference; lastKnownFileType = text; path = uniffi.toml; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A51D00000000000000000301 /* AudioSwitch */ = {isa = PBXFileSystemSynchronizedRootGroup; path = AudioSwitch; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A51D00000000000000000401 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A51D00000000000000000501 = {
+			isa = PBXGroup;
+			children = (
+				A51D00000000000000000301 /* AudioSwitch */,
+				A51D00000000000000000502 /* Generated */,
+				A51D00000000000000000205 /* Base.xcconfig */,
+				A51D00000000000000000203 /* Info.plist */,
+				A51D00000000000000000204 /* AudioSwitch.entitlements */,
+				A51D00000000000000000206 /* uniffi.toml */,
+				A51D00000000000000000503 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A51D00000000000000000502 /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				A51D00000000000000000201 /* audio_switch_core.swift */,
+				A51D00000000000000000202 /* audio_switch_ffi.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
+		A51D00000000000000000503 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A51D00000000000000000200 /* Audio Switch.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A51D00000000000000000601 /* AudioSwitch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A51D00000000000000000902 /* Build configuration list for PBXNativeTarget "AudioSwitch" */;
+			buildPhases = (
+				A51D00000000000000000801 /* Build Rust core */,
+				A51D00000000000000000802 /* Sources */,
+				A51D00000000000000000401 /* Frameworks */,
+				A51D00000000000000000803 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A51D00000000000000000301 /* AudioSwitch */,
+			);
+			name = AudioSwitch;
+			productName = AudioSwitch;
+			productReference = A51D00000000000000000200 /* Audio Switch.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A51D00000000000000000701 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2720;
+				LastUpgradeCheck = 2720;
+				TargetAttributes = {
+					A51D00000000000000000601 = {
+						CreatedOnToolsVersion = 27.2;
+					};
+				};
+			};
+			buildConfigurationList = A51D00000000000000000901 /* Build configuration list for PBXProject "AudioSwitch" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A51D00000000000000000501;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A51D00000000000000000503 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A51D00000000000000000601 /* AudioSwitch */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A51D00000000000000000803 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A51D00000000000000000801 /* Build Rust core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Generated/audio_switch_core.swift",
+				"$(SRCROOT)/Generated/audio_switch_ffi.swift",
+				"$(SRCROOT)/Generated/libaudio_switch_ffi.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/../scripts/build-macos-core.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A51D00000000000000000802 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A51D00000000000000000101 /* audio_switch_core.swift in Sources */,
+				A51D00000000000000000102 /* audio_switch_ffi.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A51D00000000000000000911 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A51D00000000000000000912 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A51D00000000000000000921 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A51D00000000000000000205 /* Base.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		A51D00000000000000000922 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A51D00000000000000000205 /* Base.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A51D00000000000000000901 /* Build configuration list for PBXProject "AudioSwitch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A51D00000000000000000911 /* Debug */,
+				A51D00000000000000000912 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A51D00000000000000000902 /* Build configuration list for PBXNativeTarget "AudioSwitch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A51D00000000000000000921 /* Debug */,
+				A51D00000000000000000922 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A51D00000000000000000701 /* Project object */;
+}

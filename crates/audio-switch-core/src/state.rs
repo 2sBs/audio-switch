@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ActiveMic {
     Primary,
     Secondary,
@@ -18,6 +19,7 @@ impl ActiveMic {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RouteStatus {
     Stopped,
     Starting,
@@ -28,6 +30,7 @@ pub enum RouteStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AppState {
     pub protocol: u32,
     pub revision: u64,

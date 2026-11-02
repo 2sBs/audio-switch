@@ -1,0 +1,22 @@
+[package]
+name = "audio-switch-ffi"
+version.workspace = true
+description = "Swift bindings and app core for the Audio Switch macOS app"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+# staticlib is linked into the macOS app; cdylib lets uniffi-bindgen read the
+# exported interface in library mode.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+audio-switch-core = { path = "../audio-switch-core", features = ["uniffi"] }
+thiserror.workspace = true
+uniffi.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile = "3.20"
