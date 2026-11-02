@@ -1,15 +1,20 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![forbid(unsafe_op_in_unsafe_fn)]
+
+//! Stream Deck plugin process. It relays key presses to the running Audio
+//! Switch app over the local control channel and mirrors its route on the keys.
+
 use std::collections::HashSet;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use audio_switch_core::control;
 use audio_switch_core::ipc::{ControlCommand, ControlMessage};
 use audio_switch_core::{ActiveMic, AppState, DeviceLabels, RouteStatus};
 use serde_json::{Value, json};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as WebSocketError, Message, WebSocket, connect};
-
-use crate::local_control;
 
 type StreamDeckSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -26,7 +31,11 @@ enum TrayStatus {
     Unavailable,
 }
 
-pub fn run(args: &[String]) -> Result<()> {
+fn main() -> Result<()> {
+    run(&std::env::args().collect::<Vec<_>>())
+}
+
+fn run(args: &[String]) -> Result<()> {
     let port = argument(args, "-port")?;
     let plugin_uuid = argument(args, "-pluginUUID")?;
     let register_event = argument(args, "-registerEvent")?;
@@ -187,7 +196,7 @@ fn update_unavailable_contexts(
 }
 
 fn request_state(command: ControlCommand) -> Result<UiState> {
-    match local_control::send_command(&command)? {
+    match control::send_command(&command)? {
         ControlMessage::State { state, labels, .. } => Ok(UiState { state, labels }),
         ControlMessage::Error { message, .. } => Err(anyhow!(message)),
     }

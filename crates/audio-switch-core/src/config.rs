@@ -125,8 +125,26 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("unsupported configuration version {found}; expected {expected}")]
     UnsupportedVersion { found: u32, expected: u32 },
-    #[error("LOCALAPPDATA is unavailable")]
-    MissingLocalAppData,
+    #[error("{0} is unavailable")]
+    MissingDataDirectory(&'static str),
+}
+
+/// Per-user directory that holds settings, logs, and update state.
+#[cfg(windows)]
+pub fn data_directory() -> Result<PathBuf, ConfigError> {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .ok_or(ConfigError::MissingDataDirectory("LOCALAPPDATA"))?;
+    Ok(PathBuf::from(root).join("AudioSwitch"))
+}
+
+/// Per-user directory that holds settings, logs, and update state.
+#[cfg(not(windows))]
+pub fn data_directory() -> Result<PathBuf, ConfigError> {
+    let home = std::env::var_os("HOME").ok_or(ConfigError::MissingDataDirectory("HOME"))?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("AudioSwitch"))
 }
 
 #[derive(Debug, Clone)]
@@ -136,12 +154,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn for_current_user() -> Result<Self, ConfigError> {
-        let root = std::env::var_os("LOCALAPPDATA").ok_or(ConfigError::MissingLocalAppData)?;
-        Ok(Self::at(
-            PathBuf::from(root)
-                .join("AudioSwitch")
-                .join("settings.json"),
-        ))
+        Ok(Self::at(data_directory()?.join("settings.json")))
     }
 
     pub fn at(path: impl Into<PathBuf>) -> Self {

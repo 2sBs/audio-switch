@@ -124,10 +124,13 @@ python -m http.server 4173 --directory site
 
 ## Repository layout
 
-- `crates/audio-switch-core` contains configuration, routing state, IPC, drift
-  control, and the WASAPI backend.
-- `crates/audio-switch-app` contains the tray app, native setup and settings UI,
-  autostart integration, and Stream Deck controller.
+- `crates/audio-switch-core` contains configuration, routing state, the local
+  control channel, drift control, and the platform audio backends (WASAPI on
+  Windows, Core Audio on macOS). `examples/route_spike.rs` drives a backend
+  directly for hardware checks.
+- `crates/audio-switch-windows` contains the Windows tray app, native setup and
+  settings UI, autostart integration, and updater.
+- `crates/audio-switch-stream-deck` contains the Stream Deck plugin controller.
 - `stream-deck` contains the plugin manifest and source artwork.
 - `installer` and `scripts` contain the release packaging tools.
 - `site` contains the static GitHub Pages landing page.

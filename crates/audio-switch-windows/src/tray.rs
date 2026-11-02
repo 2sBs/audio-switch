@@ -34,7 +34,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::updates::UpdateController;
 use crate::{settings, setup, ui};
-use audio_switch::local_control;
+use audio_switch_core::control;
 
 const TRAY_ICON_ID: u32 = 1;
 const HOTKEY_ID: i32 = 1;
@@ -182,8 +182,7 @@ pub fn run(
     }
 
     add_or_update_icon(window, true).context("adding tray icon")?;
-    local_control::start_server(handle_control_command)
-        .context("starting the local control server")?;
+    control::start_server(handle_control_command).context("starting the local control server")?;
     if let Some((store, config)) = pending_virtual_cable_config
         && let Err(error) = store
             .save(&config)

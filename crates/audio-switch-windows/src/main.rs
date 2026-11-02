@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use std::thread;
 use std::time::Duration;
 
-use audio_switch::local_control;
 use audio_switch_core::audio::{AudioBackend, EndpointFlow, WasapiBackend};
+use audio_switch_core::control;
 use audio_switch_core::ipc::ControlCommand;
 use audio_switch_core::{ActiveMic, AppConfig, ConfigStore};
 
@@ -80,7 +80,7 @@ fn run(args: &[String]) -> Result<()> {
             },
             _ => anyhow::bail!("--control expects state, toggle, primary, or secondary"),
         };
-        let response = local_control::send_command(&command)?;
+        let response = control::send_command(&command)?;
         println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }

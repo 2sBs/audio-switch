@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "crates/audio-switch-core",
-    "crates/audio-switch-app",
+    "crates/audio-switch-stream-deck",
+    "crates/audio-switch-windows",
 ]
 
 [workspace.package]

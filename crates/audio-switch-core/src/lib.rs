@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod control;
 pub mod ipc;
 pub mod runtime;
 pub mod state;
