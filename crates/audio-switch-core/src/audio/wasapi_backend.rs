@@ -9,6 +9,7 @@ use wasapi::{
     initialize_mta,
 };
 
+use super::microphone_activity::{ActivityMonitor, ActivityWake};
 use crate::state::ActiveMic;
 
 use super::{
@@ -67,13 +68,14 @@ impl RouteHandle {
     }
 }
 
-#[derive(Debug)]
 pub struct WasapiBackend {
     sample_rate: u32,
     mirror_buffer_ms: u32,
     mic_buffer_ms: u32,
     mirror: Mutex<Option<RouteHandle>>,
     microphone: Mutex<Option<RouteHandle>>,
+    activity: Mutex<Option<ActivityMonitor>>,
+    activity_wake: ActivityWake,
 }
 
 impl WasapiBackend {
@@ -84,11 +86,20 @@ impl WasapiBackend {
             mic_buffer_ms,
             mirror: Mutex::new(None),
             microphone: Mutex::new(None),
+            activity: Mutex::new(None),
+            activity_wake: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    pub fn set_activity_callback(&self, callback: impl Fn() + Send + Sync + 'static) {
+        *self
+            .activity_wake
+            .lock()
+            .expect("activity callback mutex poisoned") = Some(Arc::new(callback));
     }
 
     pub fn mirror_buffer_ms(&self) -> u32 {
@@ -212,6 +223,42 @@ impl Drop for WasapiBackend {
 }
 
 impl AudioBackend for WasapiBackend {
+    fn microphone_in_use(
+        &self,
+        sink_render_id: Option<&str>,
+        capture_id: Option<&str>,
+    ) -> Result<bool, AudioError> {
+        let mut activity = self.activity.lock().expect("activity mutex poisoned");
+        let Some(render_id) = sink_render_id else {
+            *activity = None;
+            return Ok(false);
+        };
+        if activity.as_ref().is_some_and(|monitor| {
+            monitor.render_id != render_id || monitor.capture_override.as_deref() != capture_id
+        }) {
+            *activity = None;
+        }
+        if activity.is_none() {
+            *activity = Some(ActivityMonitor::start(
+                render_id,
+                capture_id,
+                Arc::clone(&self.activity_wake),
+            )?);
+        }
+        let result = activity
+            .as_ref()
+            .expect("activity monitor is initialized")
+            .in_use();
+        if result.is_err() {
+            *activity = None;
+        }
+        result
+    }
+
+    fn stop_activity_monitor(&self) {
+        *self.activity.lock().expect("activity mutex poisoned") = None;
+    }
+
     fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
         with_com(|| {
             let mut endpoints = Self::enumerate_direction(Direction::Render)?;
@@ -784,7 +831,9 @@ impl Drop for StreamGuard<'_> {
     }
 }
 
-fn with_com<T>(operation: impl FnOnce() -> Result<T, AudioError>) -> Result<T, AudioError> {
+pub(super) fn with_com<T>(
+    operation: impl FnOnce() -> Result<T, AudioError>,
+) -> Result<T, AudioError> {
     initialize_mta().ok().map_err(audio_backend_error)?;
     let result = operation();
     wasapi::deinitialize();

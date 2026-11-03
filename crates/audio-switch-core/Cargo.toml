@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 wasapi.workspace = true
 windows.workspace = true
+windows-core.workspace = true
 
 [dev-dependencies]
 tempfile = "3.20"

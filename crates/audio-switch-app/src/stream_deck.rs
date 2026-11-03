@@ -165,7 +165,10 @@ fn update_contexts(
             socket,
             &json!({ "event": "setTitle", "context": context, "payload": { "title": title.as_str(), "target": 0 } }),
         )?;
-        if !matches!(state.state.mic_status, RouteStatus::Routing) {
+        if !matches!(
+            state.state.mic_status,
+            RouteStatus::Routing | RouteStatus::Idle
+        ) {
             send_json(socket, &json!({ "event": "showAlert", "context": context }))?;
         }
     }

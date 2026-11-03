@@ -51,6 +51,16 @@ that stable endpoint.
 Left-click the tray icon or press `Ctrl+Shift+F11` to switch microphones.
 Right-click the icon to choose a route, inspect status, or open Settings.
 
+The selected physical microphone opens when an application starts recording
+from the virtual cable. When the last recording stream stops, Audio Switch
+releases the microphone and reports it as idle. This lets headsets turn off
+automatic sidetone while unused. The selection and playback mirror remain
+active, and switching microphones still plays its cue while idle.
+
+Applications that keep recording while muted or waiting for push-to-talk keep
+the microphone active. Capture must reopen when recording begins, so the start
+of a recording can contain a brief gap while the physical microphone starts.
+
 Audio Switch preserves the selected route if the Secondary device disconnects.
 It waits for that device and resumes the route when it returns instead of
 silently falling back to Primary.
@@ -59,6 +69,14 @@ Only one tray app can run in a Windows session. The optional Stream Deck plugin
 controls that running app over a session-local named pipe. It does not include
 or launch another tray host. If the app is unavailable, the key displays
 `START AUDIO SWITCH`.
+
+The virtual cable's recording endpoint is detected from its audio adapter,
+including when the endpoint has been renamed. If the adapter exposes multiple
+recording endpoints, set `endpoints.virtualCapture` in `settings.json` to the
+desired capture endpoint ID from `audio-switch.exe --list-devices`, then restart
+Audio Switch. Omit the field or set it to `null` for automatic detection. A
+detection failure appears in route status and leaves the physical microphone
+closed until detection succeeds.
 
 Settings are stored in `%LOCALAPPDATA%\AudioSwitch\settings.json`. The app has
 no accounts, telemetry, or hosted service. Installed copies check the public
@@ -105,7 +123,7 @@ npm install --global @elgato/cli@1.7.4
 To build the per-user installer, install Inno Setup 6 and run:
 
 ```powershell
-.\scripts\package-installer.ps1 -Version 0.5.2
+.\scripts\package-installer.ps1 -Version 0.5.3
 ```
 
 Generated packages are written to `dist\` and are not tracked by Git.
@@ -136,7 +154,7 @@ python -m http.server 4173 --directory site
 
 The GitHub Actions workflow checks formatting, tests, and Clippy before building
 the standalone app, installer, Stream Deck package, and SHA-256 checksums. A tag
-matching the Cargo workspace version, such as `v0.5.2`, publishes those files as
+matching the Cargo workspace version, such as `v0.5.3`, publishes those files as
 an immutable GitHub release. Re-running a release succeeds only when every
 published asset still has the expected GitHub SHA-256 digest.
 

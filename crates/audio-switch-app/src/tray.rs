@@ -25,10 +25,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetMessageW, GetSystemMetrics, HICON, LR_DEFAULTCOLOR, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
     MB_SETFOREGROUND, MB_TOPMOST, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MessageBoxW,
-    PostQuitMessage, RegisterClassW, SM_CXSMICON, SetForegroundWindow, SetTimer, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
-    WNDCLASSW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON, SetForegroundWindow, SetTimer,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -40,6 +40,7 @@ const TRAY_ICON_ID: u32 = 1;
 const HOTKEY_ID: i32 = 1;
 const REFRESH_TIMER_ID: usize = 1;
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_MIC_ACTIVITY: u32 = WM_APP + 2;
 
 const MENU_PRIMARY: usize = 1001;
 const MENU_SECONDARY: usize = 1002;
@@ -178,7 +179,19 @@ pub fn run(
     }
     .context("creating tray message window")?;
     if let Some(context) = CONTEXT.get() {
-        context.lock().expect("tray mutex poisoned").window = window.0 as usize;
+        let mut context = context.lock().expect("tray mutex poisoned");
+        let window_address = window.0 as usize;
+        context.window = window_address;
+        context.controller.backend().set_activity_callback(move || {
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(window_address as *mut _)),
+                    WM_MIC_ACTIVITY,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            };
+        });
     }
 
     add_or_update_icon(window, true).context("adding tray icon")?;
@@ -282,11 +295,7 @@ fn handle_control_command(command: ControlCommand) -> ControlMessage {
                 clear_notification_state(NotificationChannel::Operation);
                 notify_route_failure(window);
             }
-            ControlMessage::State {
-                request_id,
-                state,
-                labels,
-            }
+            ControlMessage::state(request_id, state, labels)
         }
         Err(error) => {
             eprintln!("Audio Switch control command failed: {error}");
@@ -340,6 +349,10 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == REFRESH_TIMER_ID && !setup_is_active() => {
+            refresh(window);
+            LRESULT(0)
+        }
+        WM_MIC_ACTIVITY if !setup_is_active() => {
             refresh(window);
             LRESULT(0)
         }
@@ -852,6 +865,7 @@ fn show_status(window: HWND) {
 fn route_status_text(status: &RouteStatus) -> String {
     match status {
         RouteStatus::Stopped => "Stopped".into(),
+        RouteStatus::Idle => "Idle, waiting for an application".into(),
         RouteStatus::Starting => "Starting".into(),
         RouteStatus::Routing => "Routing".into(),
         RouteStatus::Waiting { reason } => format!("Waiting: {reason}"),
@@ -931,7 +945,7 @@ fn add_or_update_icon(window: HWND, add: bool) -> Result<()> {
         .map(|context| {
             let context = context.lock().expect("tray mutex poisoned");
             let state = context.controller.state();
-            let warning = !matches!(state.mic_status, RouteStatus::Routing)
+            let warning = !matches!(state.mic_status, RouteStatus::Routing | RouteStatus::Idle)
                 || !matches!(state.mirror_status, RouteStatus::Routing);
             let labels = &context.controller.config().labels;
             let active_label = match state.active_mic {

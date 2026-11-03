@@ -1,5 +1,6 @@
 mod cue;
 mod drift;
+mod microphone_activity;
 mod traits;
 mod wasapi_backend;
 

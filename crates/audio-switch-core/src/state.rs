@@ -20,6 +20,7 @@ impl ActiveMic {
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RouteStatus {
     Stopped,
+    Idle,
     Starting,
     Routing,
     Waiting { reason: String },
@@ -79,6 +80,7 @@ pub enum DesiredTransition {
 pub struct RoutingStateMachine {
     state: AppState,
     availability: EndpointAvailability,
+    microphone_activity: Result<bool, String>,
 }
 
 impl RoutingStateMachine {
@@ -86,6 +88,7 @@ impl RoutingStateMachine {
         let mut machine = Self {
             state: AppState::new(active_mic),
             availability,
+            microphone_activity: Ok(false),
         };
         machine.reconcile_status();
         machine
@@ -111,11 +114,13 @@ impl RoutingStateMachine {
     pub fn update_availability(
         &mut self,
         availability: EndpointAvailability,
+        microphone_activity: Result<bool, String>,
     ) -> Vec<DesiredTransition> {
-        if self.availability == availability {
+        if self.availability == availability && self.microphone_activity == microphone_activity {
             return Vec::new();
         }
         self.availability = availability;
+        self.microphone_activity = microphone_activity;
         self.bump_revision();
         self.reconcile(false)
     }
@@ -161,6 +166,7 @@ impl RoutingStateMachine {
 
         if mic_was_routing
             && !restart_mic
+            && self.microphone_activity == Ok(true)
             && self.availability.virtual_mic
             && self.availability.mic_available(self.state.active_mic)
         {
@@ -207,6 +213,12 @@ impl RoutingStateMachine {
                 }
                 .into(),
             }
+        } else if let Err(message) = &self.microphone_activity {
+            RouteStatus::Error {
+                message: message.clone(),
+            }
+        } else if self.microphone_activity == Ok(false) {
+            RouteStatus::Idle
         } else {
             RouteStatus::Starting
         };
@@ -247,10 +259,13 @@ mod tests {
     fn secondary_disconnect_waits_without_falling_back() {
         let mut machine = RoutingStateMachine::new(ActiveMic::Secondary, all_available());
         machine.mic_started();
-        let transitions = machine.update_availability(EndpointAvailability {
-            secondary_mic: false,
-            ..all_available()
-        });
+        let transitions = machine.update_availability(
+            EndpointAvailability {
+                secondary_mic: false,
+                ..all_available()
+            },
+            Ok(true),
+        );
 
         assert_eq!(machine.state().active_mic, ActiveMic::Secondary);
         assert!(matches!(
@@ -267,7 +282,7 @@ mod tests {
         unavailable.secondary_mic = false;
         let mut machine = RoutingStateMachine::new(ActiveMic::Secondary, unavailable);
 
-        let transitions = machine.update_availability(all_available());
+        let transitions = machine.update_availability(all_available(), Ok(true));
         assert_eq!(
             transitions,
             [
@@ -280,6 +295,7 @@ mod tests {
     #[test]
     fn failed_route_can_be_retried_without_an_availability_change() {
         let mut machine = RoutingStateMachine::new(ActiveMic::Secondary, all_available());
+        machine.update_availability(all_available(), Ok(true));
         machine.mic_started();
         machine.mirror_started();
         machine.mic_failed("device is in use");
@@ -297,6 +313,7 @@ mod tests {
     #[test]
     fn toggling_stops_old_mic_before_starting_new_one() {
         let mut machine = RoutingStateMachine::new(ActiveMic::Primary, all_available());
+        machine.update_availability(all_available(), Ok(true));
         machine.mic_started();
         machine.mirror_started();
         let transitions = machine.toggle_mic();
