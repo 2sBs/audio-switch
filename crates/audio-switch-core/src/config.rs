@@ -18,6 +18,8 @@ pub struct EndpointIds {
     pub primary_capture: Option<String>,
     pub secondary_capture: Option<String>,
     pub virtual_render: Option<String>,
+    #[serde(default)]
+    pub virtual_capture: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +249,7 @@ mod tests {
             ..AppConfig::default()
         };
         expected.endpoints.primary_render = Some("primary-render-id".into());
+        expected.endpoints.virtual_capture = Some("virtual-capture-id".into());
 
         store.save(&expected).unwrap();
         assert_eq!(store.load_or_default().unwrap(), expected);
@@ -280,5 +283,16 @@ mod tests {
         let config: AppConfig = serde_json::from_value(value).unwrap();
 
         assert_eq!(config.update_policy, UpdatePolicy::Automatic);
+    }
+
+    #[test]
+    fn existing_settings_use_automatic_virtual_capture_detection() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value["endpoints"]
+            .as_object_mut()
+            .unwrap()
+            .remove("virtualCapture");
+        let config: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.endpoints.virtual_capture, None);
     }
 }

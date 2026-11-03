@@ -3,6 +3,8 @@ mod bridge;
 mod coreaudio_backend;
 mod cue;
 mod drift;
+#[cfg(windows)]
+mod microphone_activity;
 mod traits;
 #[cfg(windows)]
 mod wasapi_backend;

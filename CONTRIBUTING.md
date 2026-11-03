@@ -21,6 +21,24 @@ Keep changes focused. Update current documentation when behavior changes and add
 tests for routing state, configuration compatibility, or IPC behavior where a
 regression would be hard to spot manually.
 
+The microphone activity integration tests use an installed virtual cable. Close
+applications recording from that cable before running them. They inspect its
+endpoint pairing and briefly open recording streams without saving audio:
+
+```powershell
+$env:AUDIO_SWITCH_TEST_VIRTUAL_RENDER = (Get-Content "$env:LOCALAPPDATA\AudioSwitch\settings.json" -Raw | ConvertFrom-Json).endpoints.virtualRender
+cargo test --locked -p audio-switch-core native_c -- --ignored --nocapture --test-threads=1
+```
+
+For a headset check, close the installed tray app before launching a development
+build. Select the headset, start recording from the virtual cable, then stop.
+Confirm sidetone follows recording, the selected mic stays remembered while idle,
+and the beginning of a recording has acceptable startup latency.
+
+Protocol 1 reports an idle microphone as `routing` so older Stream Deck
+controllers still recognize it as ready. The tray's route status distinguishes
+idle capture from a running stream.
+
 Preserve these project boundaries:
 
 - Routing uses configurable Primary and Secondary roles, not hard-coded device

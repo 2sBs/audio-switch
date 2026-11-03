@@ -17,6 +17,7 @@ extension RouteStatus {
     var text: String {
         switch self {
         case .stopped: "stopped"
+        case .idle: "idle, waiting for an application"
         case .starting: "starting"
         case .routing: "routing"
         case .waiting(let reason): reason
@@ -28,7 +29,7 @@ extension RouteStatus {
         switch self {
         case .routing: "checkmark.circle"
         case .starting: "circle.dotted"
-        case .stopped: "pause.circle"
+        case .stopped, .idle: "pause.circle"
         case .waiting: "clock"
         case .error: "exclamationmark.triangle"
         }

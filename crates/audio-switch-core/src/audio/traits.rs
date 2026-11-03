@@ -43,6 +43,12 @@ pub trait VirtualMicSink: Send {
 
 pub trait AudioBackend: Send + Sync {
     fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError>;
+    fn microphone_in_use(
+        &self,
+        sink_render_id: Option<&str>,
+        capture_id: Option<&str>,
+    ) -> Result<bool, AudioError>;
+    fn stop_activity_monitor(&self);
     fn start_mirror(
         &self,
         source_render_id: &str,

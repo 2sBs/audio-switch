@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "audio-switch"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "audio-switch-core",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "audio-switch-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "objc2",
  "objc2-core-audio",
@@ -100,11 +100,12 @@ dependencies = [
  "uniffi",
  "wasapi",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
 name = "audio-switch-ffi"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "audio-switch-core",
  "tempfile",
@@ -114,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "audio-switch-stream-deck"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "audio-switch-core",
@@ -1300,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "uniffi",
 ]

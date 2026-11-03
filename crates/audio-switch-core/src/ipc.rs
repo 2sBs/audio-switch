@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::DeviceLabels;
-use crate::state::{ActiveMic, AppState};
+use crate::state::{ActiveMic, AppState, RouteStatus};
 
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
@@ -36,6 +36,20 @@ pub enum ControlMessage {
         request_id: Option<String>,
         message: String,
     },
+}
+
+impl ControlMessage {
+    pub fn state(request_id: Option<String>, mut state: AppState, labels: DeviceLabels) -> Self {
+        // Protocol 1 controllers understand a ready route as Routing, including idle capture.
+        if state.mic_status == RouteStatus::Idle {
+            state.mic_status = RouteStatus::Routing;
+        }
+        Self::State {
+            request_id,
+            state,
+            labels,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -99,5 +113,16 @@ mod tests {
             decode_message(&encoded[..encoded.len() - 1]).unwrap(),
             message
         );
+    }
+
+    #[test]
+    fn idle_capture_remains_compatible_with_protocol_one_controllers() {
+        let mut state = AppState::new(ActiveMic::Secondary);
+        state.mic_status = RouteStatus::Idle;
+        let message = ControlMessage::state(None, state, DeviceLabels::default());
+        let encoded = serde_json::to_value(message).unwrap();
+        assert_eq!(encoded["state"]["protocol"], 1);
+        assert_eq!(encoded["state"]["micStatus"]["kind"], "routing");
+        assert_eq!(encoded["state"]["activeMic"], "secondary");
     }
 }

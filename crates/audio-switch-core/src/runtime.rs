@@ -74,9 +74,18 @@ impl<B: AudioBackend> RoutingController<B> {
         let had_route_error = route_has_error(self.machine.state());
         self.machine
             .update_system_audio(self.system_audio(&endpoints));
+        let availability = self.availability_of(&endpoints);
+        let activity = self.backend.microphone_in_use(
+            self.config
+                .endpoints
+                .virtual_render
+                .as_deref()
+                .filter(|_| availability.virtual_mic),
+            self.config.endpoints.virtual_capture.as_deref(),
+        );
         let mut transitions = self
             .machine
-            .update_availability(self.availability_of(&endpoints));
+            .update_availability(availability, activity.map_err(|error| error.to_string()));
         let retry_attempted = transitions.is_empty() && now >= self.next_error_retry;
         if retry_attempted {
             transitions = self.machine.retry_failed_routes();
@@ -101,7 +110,10 @@ impl<B: AudioBackend> RoutingController<B> {
 
         if changed
             && self.config.audio.cue_enabled
-            && matches!(self.machine.state().mic_status, RouteStatus::Routing)
+            && matches!(
+                self.machine.state().mic_status,
+                RouteStatus::Routing | RouteStatus::Idle
+            )
         {
             let endpoint =
                 self.required(&self.config.endpoints.primary_render, "primary render")?;
@@ -150,6 +162,7 @@ impl<B: AudioBackend> RoutingController<B> {
     }
 
     pub fn stop(&mut self) {
+        self.backend.stop_activity_monitor();
         let _ = self.backend.stop_microphone();
         let _ = self.backend.stop_mirror();
     }
@@ -302,11 +315,11 @@ mod tests {
     use super::*;
     use crate::audio::EndpointFlow;
 
-    #[derive(Default)]
     struct FakeBackend {
         calls: Mutex<Vec<String>>,
         endpoints: Mutex<Vec<Endpoint>>,
         fail_microphone: Mutex<bool>,
+        microphone_in_use: Mutex<Result<bool, String>>,
     }
 
     impl FakeBackend {
@@ -330,11 +343,22 @@ mod tests {
                     endpoint(&config.endpoints.virtual_render, EndpointFlow::Render),
                 ]),
                 fail_microphone: Mutex::new(false),
+                microphone_in_use: Mutex::new(Ok(true)),
             }
         }
     }
 
     impl AudioBackend for FakeBackend {
+        fn microphone_in_use(&self, _: Option<&str>, _: Option<&str>) -> Result<bool, AudioError> {
+            self.microphone_in_use
+                .lock()
+                .unwrap()
+                .clone()
+                .map_err(AudioError::Backend)
+        }
+
+        fn stop_activity_monitor(&self) {}
+
         fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
             Ok(self.endpoints.lock().unwrap().clone())
         }
@@ -392,6 +416,132 @@ mod tests {
         config.endpoints.secondary_capture = Some("secondary-mic".into());
         config.endpoints.virtual_render = Some("virtual-mic".into());
         config
+    }
+
+    #[test]
+    fn idle_selection_is_remembered_and_capture_follows_consumer_activity() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ConfigStore::at(directory.path().join("settings.json"));
+        let config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        *backend.microphone_in_use.lock().unwrap() = Ok(false);
+        let mut controller = RoutingController::new(backend, store.clone(), config);
+
+        controller.start().unwrap();
+        assert_eq!(controller.state().mic_status, RouteStatus::Idle);
+        assert_eq!(
+            *controller.backend().calls.lock().unwrap(),
+            ["mirror:primary->secondary"]
+        );
+        controller.backend().calls.lock().unwrap().clear();
+
+        controller.toggle_mic().unwrap();
+        assert_eq!(
+            store.load_or_default().unwrap().active_mic,
+            ActiveMic::Secondary
+        );
+        assert_eq!(controller.state().mic_status, RouteStatus::Idle);
+        assert_eq!(
+            *controller.backend().calls.lock().unwrap(),
+            ["cue:Secondary"]
+        );
+        controller.backend().calls.lock().unwrap().clear();
+
+        *controller.backend().microphone_in_use.lock().unwrap() = Ok(true);
+        controller.refresh_endpoints().unwrap();
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(
+            *controller.backend().calls.lock().unwrap(),
+            ["mic:Secondary:secondary-mic->virtual-mic"]
+        );
+        controller.backend().calls.lock().unwrap().clear();
+
+        *controller.backend().microphone_in_use.lock().unwrap() = Ok(false);
+        controller.refresh_endpoints().unwrap();
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(*controller.backend().calls.lock().unwrap(), ["stop-mic"]);
+        assert_eq!(controller.state().mic_status, RouteStatus::Idle);
+        assert_eq!(controller.state().mirror_status, RouteStatus::Routing);
+    }
+
+    #[test]
+    fn activity_failure_releases_capture_and_recovers_when_detection_returns() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        let mut controller = RoutingController::new(
+            backend,
+            ConfigStore::at(directory.path().join("settings.json")),
+            config,
+        );
+        controller.start().unwrap();
+        controller.backend().calls.lock().unwrap().clear();
+
+        *controller.backend().microphone_in_use.lock().unwrap() = Err("cable was unplugged".into());
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(*controller.backend().calls.lock().unwrap(), ["stop-mic"]);
+        assert!(matches!(
+            controller.state().mic_status,
+            RouteStatus::Error { .. }
+        ));
+        assert_eq!(controller.state().mirror_status, RouteStatus::Routing);
+
+        controller.toggle_mic().unwrap();
+        assert!(matches!(
+            controller.state().mic_status,
+            RouteStatus::Error { .. }
+        ));
+        *controller.backend().microphone_in_use.lock().unwrap() = Ok(false);
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(controller.state().mic_status, RouteStatus::Idle);
+
+        *controller.backend().microphone_in_use.lock().unwrap() = Ok(true);
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(controller.state().mic_status, RouteStatus::Routing);
+    }
+
+    #[test]
+    fn settings_changes_and_device_reconnection_do_not_open_an_idle_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured();
+        let backend = FakeBackend::with_configured_endpoints(&config);
+        *backend.microphone_in_use.lock().unwrap() = Ok(false);
+        let mut controller = RoutingController::new(
+            backend,
+            ConfigStore::at(directory.path().join("settings.json")),
+            config.clone(),
+        );
+        controller.start().unwrap();
+        controller.backend().calls.lock().unwrap().clear();
+
+        config.labels.primary = "Desk".into();
+        controller.apply_config(config).unwrap();
+        controller
+            .backend()
+            .endpoints
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|endpoint| endpoint.id == "primary-mic")
+            .unwrap()
+            .available = false;
+        controller.refresh_endpoints().unwrap();
+        assert!(matches!(
+            controller.state().mic_status,
+            RouteStatus::Waiting { .. }
+        ));
+        controller
+            .backend()
+            .endpoints
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|endpoint| endpoint.id == "primary-mic")
+            .unwrap()
+            .available = true;
+        controller.refresh_endpoints().unwrap();
+        assert_eq!(controller.state().mic_status, RouteStatus::Idle);
+        assert!(controller.backend().calls.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -291,6 +291,10 @@ mod tests {
     struct FakeBackend(Vec<Endpoint>);
 
     impl AudioBackend for FakeBackend {
+        fn microphone_in_use(&self, _: Option<&str>, _: Option<&str>) -> Result<bool, AudioError> {
+            Ok(true)
+        }
+        fn stop_activity_monitor(&self) {}
         fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
             Ok(self.0.clone())
         }

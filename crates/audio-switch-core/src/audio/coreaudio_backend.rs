@@ -107,6 +107,13 @@ impl CoreAudioBackend {
 }
 
 impl AudioBackend for CoreAudioBackend {
+    fn microphone_in_use(&self, _: Option<&str>, _: Option<&str>) -> Result<bool, AudioError> {
+        // Consumer activity detection is Windows-only; keep macOS routing continuously.
+        Ok(true)
+    }
+
+    fn stop_activity_monitor(&self) {}
+
     fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
         let devices: Vec<AudioObjectID> = get_property_array(
             kAudioObjectSystemObject as AudioObjectID,
