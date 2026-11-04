@@ -7,8 +7,14 @@
 //! cargo run -p audio-switch-core --example route_spike -- mic <capture-id> <virtual-cable-id> [seconds]
 //! cargo run -p audio-switch-core --example route_spike -- switch <capture-a> <capture-b> <virtual-cable-id>
 //! cargo run -p audio-switch-core --example route_spike -- cue <render-id>
+//! cargo run -p audio-switch-core --example route_spike -- demand <virtual-cable-id> [seconds] [capture-id]
 //! ```
+//!
+//! `demand` prints whether another application is recording from the cable
+//! each time it changes. With a capture ID it also routes that microphone into
+//! the cable, to show this process's own render does not count as demand.
 
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -81,9 +87,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             thread::sleep(Duration::from_millis(300));
             backend.play_cue(target, CueKind::Secondary, -18.0)?;
         }
+        ["demand", cable, rest @ ..] => {
+            let started = Instant::now();
+            let (wake, woken) = mpsc::channel();
+            backend.set_activity_callback(move || {
+                let _ = wake.send(());
+            });
+            thread::spawn(move || {
+                while woken.recv().is_ok() {
+                    println!("{:>6.2}s  woken", started.elapsed().as_secs_f32());
+                }
+            });
+            if let [_, capture, ..] = rest {
+                backend.start_microphone(capture, ActiveMic::Primary, cable)?;
+                println!("routing {capture} into {cable}");
+            }
+            let mut last = None;
+            while started.elapsed() < Duration::from_secs(seconds(2)?) {
+                let in_use = backend
+                    .microphone_in_use(Some(cable), None)
+                    .map_err(|error| error.to_string());
+                if last.as_ref() != Some(&in_use) {
+                    println!(
+                        "{:>6.2}s  in use: {in_use:?}",
+                        started.elapsed().as_secs_f32()
+                    );
+                    last = Some(in_use);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            backend.stop_activity_monitor();
+            backend.stop_microphone()?;
+        }
         _ => {
             return Err(
-                "usage: list | mirror <src> <dst> [s] | mic <src> <sink> [s] | switch <a> <b> <sink> | cue <dst>".into(),
+                "usage: list | mirror <src> <dst> [s] | mic <src> <sink> [s] | switch <a> <b> <sink> | cue <dst> | demand <cable> [s] [capture]".into(),
             );
         }
     }

@@ -1,12 +1,14 @@
 //! Swift-facing core of the macOS app.
 //!
 //! `AppCore` owns the routing controller, refreshes endpoints once a second
-//! (as the Windows tray does), serves the local control channel for the
+//! and as soon as an application starts or stops recording from the virtual
+//! cable (as the Windows tray does), serves the local control channel for the
 //! Stream Deck plugin and CLI, and pushes every state change to a Swift
 //! observer. The Swift app handles UI and OS integration only.
 
 #![cfg(target_os = "macos")]
 
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::Duration;
@@ -99,6 +101,10 @@ impl AppCore {
         let config = store.load_or_default()?;
         let backend =
             CoreAudioBackend::new(config.audio.mirror_buffer_ms, config.audio.mic_buffer_ms);
+        let (wake, woken) = mpsc::channel();
+        backend.set_activity_callback(move || {
+            let _ = wake.send(());
+        });
         let session = Arc::new(Session::new(
             RoutingController::new(backend, store, config),
             observer,
@@ -107,7 +113,7 @@ impl AppCore {
         let control_session = Arc::downgrade(&session);
         control::start_server(move |command| handle_control_command(&control_session, command))?;
         session.run(RoutingController::start)?;
-        spawn_refresh(Arc::downgrade(&session));
+        spawn_refresh(Arc::downgrade(&session), woken);
         Ok(Arc::new(Self {
             session,
             configured_at_start,
@@ -220,14 +226,19 @@ impl<B: AudioBackend> Session<B> {
     }
 }
 
-/// Polls endpoints so routes follow devices being plugged in or removed.
-/// Stops once the session is dropped.
-fn spawn_refresh<B: AudioBackend + 'static>(session: Weak<Session<B>>) {
+/// Polls endpoints so routes follow devices being plugged in or removed, and
+/// refreshes early whenever `woken` fires so capture follows recording demand
+/// promptly. Stops once the session is dropped.
+fn spawn_refresh<B: AudioBackend + 'static>(session: Weak<Session<B>>, woken: Receiver<()>) {
     let _ = thread::Builder::new()
         .name("audio-switch-refresh".into())
         .spawn(move || {
             loop {
-                thread::sleep(REFRESH_INTERVAL);
+                if woken.recv_timeout(REFRESH_INTERVAL) == Err(RecvTimeoutError::Disconnected) {
+                    return;
+                }
+                // One refresh covers a burst of notifications.
+                while woken.try_recv().is_ok() {}
                 let Some(session) = session.upgrade() else {
                     return;
                 };
@@ -262,11 +273,7 @@ fn handle_control_command<B: AudioBackend>(
     match result {
         Ok(()) => {
             let Snapshot { state, labels, .. } = session.lock().snapshot();
-            ControlMessage::State {
-                request_id,
-                state,
-                labels,
-            }
+            ControlMessage::state(request_id, state, labels)
         }
         Err(error) => ControlMessage::Error {
             request_id,
@@ -278,6 +285,7 @@ fn handle_control_command<B: AudioBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audio_switch_core::RouteStatus;
     use audio_switch_core::audio::{AudioError, CueKind, EndpointFlow};
 
     struct Recorder(Mutex<Vec<Snapshot>>);
@@ -288,15 +296,18 @@ mod tests {
         }
     }
 
-    struct FakeBackend(Vec<Endpoint>);
+    struct FakeBackend {
+        endpoints: Vec<Endpoint>,
+        in_use: Mutex<bool>,
+    }
 
     impl AudioBackend for FakeBackend {
         fn microphone_in_use(&self, _: Option<&str>, _: Option<&str>) -> Result<bool, AudioError> {
-            Ok(true)
+            Ok(*self.in_use.lock().unwrap())
         }
         fn stop_activity_monitor(&self) {}
         fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
-            Ok(self.0.clone())
+            Ok(self.endpoints.clone())
         }
         fn start_mirror(&self, _: &str, _: &str) -> Result<(), AudioError> {
             Ok(())
@@ -322,22 +333,24 @@ mod tests {
         endpoints.primary_capture = Some("mic-a".into());
         endpoints.secondary_capture = Some("mic-b".into());
         endpoints.virtual_render = Some("cable".into());
-        let backend = FakeBackend(
-            [
-                ("mic-a", EndpointFlow::Capture),
-                ("mic-b", EndpointFlow::Capture),
-                ("cable", EndpointFlow::Render),
-            ]
-            .map(|(id, flow)| Endpoint {
-                id: id.into(),
-                name: id.into(),
-                flow,
-                available: true,
-                system_default: false,
-                device_id: None,
-            })
-            .into(),
-        );
+        let endpoints = [
+            ("mic-a", EndpointFlow::Capture),
+            ("mic-b", EndpointFlow::Capture),
+            ("cable", EndpointFlow::Render),
+        ]
+        .map(|(id, flow)| Endpoint {
+            id: id.into(),
+            name: id.into(),
+            flow,
+            available: true,
+            system_default: false,
+            device_id: None,
+        })
+        .into();
+        let backend = FakeBackend {
+            endpoints,
+            in_use: Mutex::new(true),
+        };
         let store = ConfigStore::at(directory.path().join("settings.json"));
         let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
         let session = Arc::new(Session::new(
@@ -406,5 +419,46 @@ mod tests {
             handle_control_command(&weak, ControlCommand::GetState { request_id: None }),
             ControlMessage::Error { .. }
         ));
+    }
+
+    #[test]
+    fn recording_demand_wakes_the_refresh_before_the_next_poll() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, recorder) = session(&directory);
+        *session.lock().controller.backend().in_use.lock().unwrap() = false;
+        session.run(RoutingController::refresh_endpoints).unwrap();
+        assert_eq!(
+            session.lock().snapshot().state.mic_status,
+            RouteStatus::Idle
+        );
+
+        let (wake, woken) = mpsc::channel();
+        spawn_refresh(Arc::downgrade(&session), woken);
+        *session.lock().controller.backend().in_use.lock().unwrap() = true;
+        wake.send(()).unwrap();
+        thread::sleep(REFRESH_INTERVAL / 2);
+
+        let published = recorder.0.lock().unwrap();
+        assert_eq!(
+            published.last().unwrap().state.mic_status,
+            RouteStatus::Routing
+        );
+    }
+
+    #[test]
+    fn control_channel_reports_idle_capture_as_routing() {
+        let directory = tempfile::tempdir().unwrap();
+        let (session, _) = session(&directory);
+        *session.lock().controller.backend().in_use.lock().unwrap() = false;
+        session.run(RoutingController::refresh_endpoints).unwrap();
+
+        let response = handle_control_command(
+            &Arc::downgrade(&session),
+            ControlCommand::GetState { request_id: None },
+        );
+        let ControlMessage::State { state, .. } = response else {
+            panic!("expected state, got {response:?}");
+        };
+        assert_eq!(state.mic_status, RouteStatus::Routing);
     }
 }

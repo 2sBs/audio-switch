@@ -4,10 +4,12 @@
 //! The shared ring and `AdaptiveReader` bridge the two clocks and any sample
 //! rate difference, so no device's nominal rate is ever changed. Playback
 //! mirroring reads the Primary device through a private process tap (macOS
-//! 14.2+) exposed as the input of a private aggregate device.
+//! 14.2+) exposed as the input of a private aggregate device. Microphone
+//! capture runs only while another application records from the virtual cable;
+//! see `coreaudio_activity`.
 
 use std::ffi::{CStr, c_void};
-use std::mem::{MaybeUninit, size_of};
+use std::mem::{MaybeUninit, offset_of, size_of};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,12 +23,13 @@ use objc2_core_audio::{
     AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart,
     AudioDeviceStop, AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
     AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
-    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertyScope, AudioObjectPropertySelector,
-    CATapDescription, CATapMuteBehavior, kAudioAggregateDeviceIsPrivateKey,
-    kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapAutoStartKey,
-    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
-    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID, kAudioDevicePropertyIsHidden,
+    AudioHardwareIOProcStreamUsage, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize,
+    AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyScope,
+    AudioObjectPropertySelector, AudioObjectSetPropertyData, CATapDescription, CATapMuteBehavior,
+    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey,
+    kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
+    kAudioAggregateDeviceUIDKey, kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
+    kAudioDevicePropertyIOProcStreamUsage, kAudioDevicePropertyIsHidden,
     kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreamConfiguration,
     kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultInputDevice,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
@@ -47,6 +50,7 @@ use rtrb::Producer;
 use crate::state::ActiveMic;
 
 use super::bridge::{AdaptiveReader, AtomicDiagnostics, RouteDiagnostics, frames_for_ms, ring};
+use super::coreaudio_activity::{ActivityMonitor, ActivityWake};
 use super::{AudioBackend, AudioError, CueKind, Endpoint, EndpointFlow, synthesize_cue};
 
 /// UID prefix of the private aggregate devices this process creates. They are
@@ -58,12 +62,16 @@ const RENDER_CHUNK_FRAMES: usize = 4_096;
 const CUE_TAIL: Duration = Duration::from_millis(30);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
 pub struct CoreAudioBackend {
     mirror_buffer_ms: u32,
     mic_buffer_ms: u32,
     mirror: Mutex<Option<Route>>,
     microphone: Mutex<Option<Route>>,
+    activity: Mutex<Option<ActivityMonitor>>,
+    /// Core Audio may still deliver a property notification after its
+    /// listener is removed, so the state those listeners read is leaked, once
+    /// per backend, rather than freed under them.
+    activity_wake: &'static ActivityWake,
 }
 
 impl CoreAudioBackend {
@@ -73,7 +81,18 @@ impl CoreAudioBackend {
             mic_buffer_ms,
             mirror: Mutex::new(None),
             microphone: Mutex::new(None),
+            activity: Mutex::new(None),
+            activity_wake: Box::leak(Box::default()),
         }
+    }
+
+    /// Called from a Core Audio notification thread whenever recording demand
+    /// on the virtual cable may have changed. It must return quickly.
+    pub fn set_activity_callback(&self, callback: impl Fn() + Send + Sync + 'static) {
+        *self
+            .activity_wake
+            .lock()
+            .expect("activity callback mutex poisoned") = Some(Arc::new(callback));
     }
 
     pub fn mirror_diagnostics(&self) -> Option<RouteDiagnostics> {
@@ -107,12 +126,41 @@ impl CoreAudioBackend {
 }
 
 impl AudioBackend for CoreAudioBackend {
-    fn microphone_in_use(&self, _: Option<&str>, _: Option<&str>) -> Result<bool, AudioError> {
-        // Consumer activity detection is Windows-only; keep macOS routing continuously.
-        Ok(true)
+    fn microphone_in_use(
+        &self,
+        sink_render_id: Option<&str>,
+        capture_id: Option<&str>,
+    ) -> Result<bool, AudioError> {
+        let mut activity = self.activity.lock().expect("activity mutex poisoned");
+        let Some(render_id) = sink_render_id else {
+            *activity = None;
+            return Ok(false);
+        };
+        if activity.as_ref().is_some_and(|monitor| {
+            monitor.render_id != render_id || monitor.capture_override.as_deref() != capture_id
+        }) {
+            *activity = None;
+        }
+        if activity.is_none() {
+            *activity = Some(ActivityMonitor::start(
+                render_id,
+                capture_id,
+                self.activity_wake,
+            )?);
+        }
+        let result = activity
+            .as_mut()
+            .expect("activity monitor is initialized")
+            .in_use();
+        if result.is_err() {
+            *activity = None;
+        }
+        result
     }
 
-    fn stop_activity_monitor(&self) {}
+    fn stop_activity_monitor(&self) {
+        *self.activity.lock().expect("activity mutex poisoned") = None;
+    }
 
     fn enumerate_endpoints(&self) -> Result<Vec<Endpoint>, AudioError> {
         let devices: Vec<AudioObjectID> = get_property_array(
@@ -226,6 +274,17 @@ impl AudioBackend for CoreAudioBackend {
     }
 }
 
+impl Drop for CoreAudioBackend {
+    fn drop(&mut self) {
+        self.stop_activity_monitor();
+        // Release the callback and whatever it captured; only the empty slot leaks.
+        self.activity_wake
+            .lock()
+            .expect("activity callback mutex poisoned")
+            .take();
+    }
+}
+
 struct RouteSpecification {
     source: AudioObjectID,
     /// Source channel feeding each ring channel.
@@ -304,6 +363,12 @@ impl Route {
 
 /// State owned by one IOProc and touched only from the device's IO thread.
 trait IoContext: Send + 'static {
+    /// The direction this IOProc never touches. It is switched off, because an
+    /// IOProc otherwise runs every stream: rendering into a device that also
+    /// records, such as a headset or the virtual cable, would run its input
+    /// and mark this process as recording.
+    const UNUSED_SCOPE: AudioObjectPropertyScope;
+
     /// Runs on a real-time thread: must not block or allocate.
     fn process(&mut self, input: &AudioBufferList, output: &mut AudioBufferList);
 }
@@ -342,9 +407,48 @@ impl<C: IoContext> IoProc<C> {
             id,
             context,
         };
+        disable_streams(device, proc.id, C::UNUSED_SCOPE)?;
         check(unsafe { AudioDeviceStart(device, proc.id) }, stage)?;
         Ok(proc)
     }
+}
+
+fn disable_streams(
+    device: AudioObjectID,
+    id: AudioDeviceIOProcID,
+    scope: AudioObjectPropertyScope,
+) -> Result<(), AudioError> {
+    let stage = "configure device streams";
+    let streams: Vec<AudioObjectID> =
+        get_property_array(device, address(kAudioDevicePropertyStreams, scope), stage)?;
+    let Some(id) = id.filter(|_| !streams.is_empty()) else {
+        return Ok(());
+    };
+    // A variable-length struct: one flag per stream, all zero (off). u64
+    // storage keeps the leading pointer aligned.
+    let size =
+        offset_of!(AudioHardwareIOProcStreamUsage, mStreamIsOn) + streams.len() * size_of::<u32>();
+    let mut storage = vec![0_u64; size.div_ceil(size_of::<u64>())];
+    let usage = storage
+        .as_mut_ptr()
+        .cast::<AudioHardwareIOProcStreamUsage>();
+    unsafe {
+        (&raw mut (*usage).mIOProc).write(NonNull::new_unchecked(id as *mut c_void));
+        (&raw mut (*usage).mNumberStreams).write(streams.len() as u32);
+    }
+    check(
+        unsafe {
+            AudioObjectSetPropertyData(
+                device,
+                NonNull::from(&address(kAudioDevicePropertyIOProcStreamUsage, scope)),
+                0,
+                ptr::null(),
+                size as u32,
+                NonNull::new_unchecked(usage.cast()),
+            )
+        },
+        stage,
+    )
 }
 
 impl<C: IoContext> Drop for IoProc<C> {
@@ -384,6 +488,8 @@ struct CaptureContext {
 }
 
 impl IoContext for CaptureContext {
+    const UNUSED_SCOPE: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput;
+
     fn process(&mut self, input: &AudioBufferList, _output: &mut AudioBufferList) {
         let buffers = buffers(input);
         let frames = frame_count(buffers);
@@ -415,6 +521,8 @@ struct RenderContext {
 }
 
 impl IoContext for RenderContext {
+    const UNUSED_SCOPE: AudioObjectPropertyScope = kAudioObjectPropertyScopeInput;
+
     fn process(&mut self, _input: &AudioBufferList, output: &mut AudioBufferList) {
         let buffers = buffers_mut(output);
         let frames = frame_count(buffers);
@@ -461,6 +569,8 @@ struct CueContext {
 }
 
 impl IoContext for CueContext {
+    const UNUSED_SCOPE: AudioObjectPropertyScope = kAudioObjectPropertyScopeInput;
+
     fn process(&mut self, _input: &AudioBufferList, output: &mut AudioBufferList) {
         let buffers = buffers_mut(output);
         let frames = frame_count(buffers);
@@ -489,7 +599,7 @@ impl IoContext for CueContext {
 struct PlaybackTap {
     aggregate: AggregateDevice,
     _tap: ProcessTap,
-    _running: RunningDevice,
+    _running: IoProc<SilenceContext>,
     /// Aggregate input channels that carry the tapped playback.
     channels: Vec<usize>,
 }
@@ -498,7 +608,11 @@ impl PlaybackTap {
     fn open(device_uid: &str) -> Result<Self, AudioError> {
         // A tap only produces audio while its device runs, and starting the
         // aggregate does not start an idle tapped device.
-        let running = RunningDevice::start(device_for_uid(device_uid)?)?;
+        let running = IoProc::start(
+            device_for_uid(device_uid)?,
+            SilenceContext,
+            "start tapped output device",
+        )?;
         let tap = ProcessTap::for_output_device(device_uid)?;
         let aggregate = AggregateDevice::for_tap(&tap.uid)?;
         ensure_float_streams(aggregate.id, kAudioObjectPropertyScopeInput)?;
@@ -525,24 +639,17 @@ impl PlaybackTap {
     }
 }
 
-/// Keeps a device's hardware running without registering an IOProc.
+/// Keeps a device's hardware running, adding silence to its output. A plain
+/// `AudioDeviceStart` without an IOProc would also run the device's input.
 #[derive(Debug)]
-struct RunningDevice(AudioObjectID);
+struct SilenceContext;
 
-impl RunningDevice {
-    fn start(device: AudioObjectID) -> Result<Self, AudioError> {
-        check(
-            unsafe { AudioDeviceStart(device, None) },
-            "start tapped output device",
-        )?;
-        Ok(Self(device))
-    }
-}
+impl IoContext for SilenceContext {
+    const UNUSED_SCOPE: AudioObjectPropertyScope = kAudioObjectPropertyScopeInput;
 
-impl Drop for RunningDevice {
-    fn drop(&mut self) {
-        unsafe {
-            AudioDeviceStop(self.0, None);
+    fn process(&mut self, _input: &AudioBufferList, output: &mut AudioBufferList) {
+        for buffer in buffers_mut(output) {
+            buffer_samples_mut(buffer).fill(0.0);
         }
     }
 }
@@ -704,7 +811,7 @@ fn describe_device(
     Ok(Some(endpoints))
 }
 
-fn device_for_uid(uid: &str) -> Result<AudioObjectID, AudioError> {
+pub(super) fn device_for_uid(uid: &str) -> Result<AudioObjectID, AudioError> {
     let cf_uid = CFString::from_str(uid);
     let uid_ref: *const CFString = &*cf_uid;
     let address = address(
@@ -741,7 +848,7 @@ fn nominal_sample_rate(device: AudioObjectID) -> Result<f64, AudioError> {
     )
 }
 
-fn channel_count(
+pub(super) fn channel_count(
     device: AudioObjectID,
     scope: AudioObjectPropertyScope,
 ) -> Result<usize, AudioError> {
@@ -793,7 +900,7 @@ fn ensure_float_streams(
     Ok(())
 }
 
-fn address(
+pub(super) fn address(
     selector: AudioObjectPropertySelector,
     scope: AudioObjectPropertyScope,
 ) -> AudioObjectPropertyAddress {
@@ -804,7 +911,7 @@ fn address(
     }
 }
 
-fn get_property<T: Copy>(
+pub(super) fn get_property<T: Copy>(
     object: AudioObjectID,
     address: AudioObjectPropertyAddress,
     stage: &str,
@@ -830,7 +937,7 @@ fn get_property<T: Copy>(
     Ok(unsafe { value.assume_init() })
 }
 
-fn get_property_array<T: Copy>(
+pub(super) fn get_property_array<T: Copy>(
     object: AudioObjectID,
     address: AudioObjectPropertyAddress,
     stage: &str,
@@ -937,7 +1044,7 @@ fn sample_at(buffers: &[AudioBuffer], channel: usize, frame: usize) -> f32 {
     0.0
 }
 
-fn check(status: i32, stage: &str) -> Result<(), AudioError> {
+pub(super) fn check(status: i32, stage: &str) -> Result<(), AudioError> {
     if status == 0 {
         return Ok(());
     }

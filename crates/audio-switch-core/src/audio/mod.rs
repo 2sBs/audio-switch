@@ -1,5 +1,7 @@
 mod bridge;
 #[cfg(target_os = "macos")]
+mod coreaudio_activity;
+#[cfg(target_os = "macos")]
 mod coreaudio_backend;
 mod cue;
 mod drift;
