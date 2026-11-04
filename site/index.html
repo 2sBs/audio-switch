@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="Audio Switch keeps one microphone input selected in Windows apps while you switch the physical microphone behind it.">
+  <meta name="description" content="Audio Switch for Windows and macOS keeps one microphone input selected in your apps while you switch the physical microphone behind it.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Audio Switch">
   <meta property="og:description" content="One input. Two physical microphones. Switch sources without changing your apps.">
@@ -41,15 +41,32 @@
   <main id="main-content">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="eyebrow">Built for Windows</p>
+        <p class="eyebrow">Built for Windows + macOS</p>
         <h1 id="hero-title">One input. Two physical microphones.</h1>
-        <p class="hero-summary">Audio Switch runs in the tray and keeps your apps connected to one virtual input. Switch the physical source with a click, a shortcut, or Stream Deck.</p>
+        <p class="hero-summary">Keep your apps connected to one virtual input. Switch the physical microphone from the Windows tray, the Mac menu bar, a shortcut, or Stream Deck.</p>
 
-        <div class="hero-actions">
-          <a class="download-button" data-download-link href="https://github.com/2sBs/audio-switch/releases/latest">Download installer</a>
-          <a class="release-link" data-release-link href="https://github.com/2sBs/audio-switch/releases/latest">View <span data-release-version>latest release</span></a>
+        <div class="hero-actions" aria-label="Downloads">
+          <div class="download-option">
+            <a class="download-button" data-download="windows" href="https://github.com/2sBs/audio-switch/releases/latest" aria-describedby="windows-requirements windows-status">
+              <span data-download-label>Windows releases</span>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>
+            </a>
+            <p class="download-requirements" id="windows-requirements">Windows 10 / 11 <span>x64 · Installer</span></p>
+            <p class="download-status" id="windows-status" data-download-status="windows" role="status">See available downloads on GitHub.</p>
+          </div>
+          <div class="download-option">
+            <a class="download-button" data-download="macos" href="https://github.com/2sBs/audio-switch/releases/latest" aria-describedby="macos-requirements macos-status">
+              <span data-download-label>macOS releases</span>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>
+            </a>
+            <p class="download-requirements" id="macos-requirements">macOS 14.2 or newer <span>Apple silicon · App zip</span></p>
+            <p class="download-status" id="macos-status" data-download-status="macos" role="status">See available downloads on GitHub.</p>
+          </div>
         </div>
-        <p class="download-status" data-release-status aria-live="polite">Finding the latest Windows installer...</p>
+        <div class="release-links">
+          <a class="release-link" data-release-link href="https://github.com/2sBs/audio-switch/releases/latest">Release notes</a>
+          <a class="release-link" data-checksums-link href="https://github.com/2sBs/audio-switch/releases/latest">Checksums</a>
+        </div>
 
         <dl class="release-facts">
           <div>
@@ -57,8 +74,8 @@
             <dd data-release-version>Latest</dd>
           </div>
           <div>
-            <dt>Platform</dt>
-            <dd>Windows x64</dd>
+            <dt>Platforms</dt>
+            <dd>Windows + macOS</dd>
           </div>
           <div>
             <dt>License</dt>
@@ -71,7 +88,7 @@
         <figure class="routing-window">
           <figcaption class="window-bar">
             <span>Audio Switch routing monitor</span>
-            <span class="window-controls" aria-hidden="true">_ &#9633; &times;</span>
+            <span class="window-detail">Signal flow</span>
           </figcaption>
 
           <div class="monitor-body">
@@ -110,11 +127,11 @@
 
             <div class="control-strip" role="group" aria-label="Ways to switch microphones">
               <span class="control-label">Switch with</span>
-              <span class="control-item control-active">Tray</span>
+              <span class="control-item control-active">App menu</span>
               <span class="control-item">Hotkey</span>
               <span class="control-item">Stream Deck</span>
             </div>
-            <p class="routing-note"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd> toggles Primary and Secondary from anywhere in Windows.</p>
+            <p class="routing-note"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd> switches microphones on Windows and macOS. You can change the shortcut in Settings.</p>
           </div>
         </figure>
       </div>
@@ -129,8 +146,8 @@
       </article>
       <article class="feature-row">
         <p class="step-label">02 / Control locally</p>
-        <h3>Tray, hotkey, or Stream Deck</h3>
-        <p>Switch from the taskbar, press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd>, or install the optional Stream Deck plugin.</p>
+        <h3>Switch from wherever you work</h3>
+        <p>Use the Windows tray or Mac menu bar, press your shortcut, or install the optional Stream Deck plugin for either platform.</p>
       </article>
       <article class="feature-row">
         <p class="step-label">03 / Stay connected</p>
@@ -143,23 +160,28 @@
       <div class="setup-heading">
         <p class="eyebrow">Guided setup</p>
         <h2 id="setup-title">Install it.<br>Set the route.<br>Leave apps alone.</h2>
+        <dl class="system-requirements">
+          <div><dt>Windows</dt><dd>Windows 10 version 1809 or newer, including Windows 11. x64.</dd></div>
+          <div><dt>macOS</dt><dd>macOS 14.2 or newer on Apple silicon. Intel Macs are not supported.</dd></div>
+          <div><dt>Stream Deck <span>Optional</span></dt><dd>Stream Deck 7.1 or newer. Keep Audio Switch running to use the plugin.</dd></div>
+        </dl>
       </div>
       <ol class="setup-list">
         <li>
           <span>01</span>
-          <p>Install a virtual audio cable such as <a href="https://vb-audio.com/Cable/">VB-CABLE</a> from its publisher.</p>
+          <p>Install a virtual audio cable from its publisher: <a href="https://vb-audio.com/Cable/">VB-CABLE for Windows</a> or <a href="https://existential.audio/blackhole/">BlackHole for macOS</a>. Audio Switch does not include a driver.</p>
         </li>
         <li>
           <span>02</span>
-          <p>Run Audio Switch and choose both physical microphones.</p>
+          <p>On Windows, run the installer. On macOS, unzip the app and move it to Applications. Open Audio Switch, allow audio access, and choose both physical microphones.</p>
         </li>
         <li>
           <span>03</span>
-          <p>Select the virtual cable as the microphone in your apps.</p>
+          <p>Select the virtual cable as the microphone in your apps: CABLE Output on Windows or BlackHole on macOS. Leave that input selected when you switch physical microphones.</p>
         </li>
         <li>
           <span>04</span>
-          <p>Switch physical sources without revisiting app settings.</p>
+          <p>Switch physical sources without revisiting app settings. The selected microphone opens when an app records from the virtual cable and is released when recording stops.</p>
         </li>
       </ol>
     </section>
@@ -168,12 +190,12 @@
       <article>
         <p class="step-label">Playback</p>
         <h2>Mirror a second output</h2>
-        <p>Send audio from your Primary playback device to Secondary while both endpoints are available.</p>
+        <p>Copy audio from your Primary playback device to Secondary. Mirroring pauses when a device disconnects or your system plays through another output.</p>
       </article>
       <article>
         <p class="step-label">Local by design</p>
         <h2>No account or telemetry</h2>
-        <p>Audio routing and settings stay on your PC. There is no hosted service behind the app.</p>
+        <p>Audio routing and settings stay on your computer. There is no hosted service behind the app.</p>
       </article>
     </section>
   </main>
@@ -181,18 +203,22 @@
   <footer class="site-footer">
     <div>
       <strong>Audio Switch</strong>
-      <p>x64 Windows 10 version 1809 or newer, including Windows 11.</p>
+      <p>Windows tray. Mac menu bar.<br>One input for your apps.</p>
     </div>
     <nav aria-label="Footer navigation">
       <a href="https://github.com/2sBs/audio-switch/releases/latest">Releases</a>
       <a href="https://github.com/2sBs/audio-switch/blob/main/SECURITY.md">Security</a>
       <a href="https://github.com/2sBs/audio-switch/blob/main/LICENSE">MIT License</a>
     </nav>
-    <p class="installer-note">Release binaries are not code-signed. Windows SmartScreen may warn before launch. Check the published SHA-256 checksum if you download the installer.</p>
+    <div class="installer-note">
+      <p><strong>Before you open it</strong></p>
+      <p>The Windows installer is unsigned, so SmartScreen may warn. The Mac app is not notarized; if macOS blocks it, choose Open Anyway in System Settings → Privacy &amp; Security.</p>
+      <p>Compare your download with the release’s SHA-256 checksum. Mac updates are manual and may require audio permissions again.</p>
+    </div>
   </footer>
 
   <noscript>
-    <p class="noscript-note">JavaScript is off, so the download button opens the latest GitHub release instead of starting the installer directly.</p>
+    <p class="noscript-note">JavaScript is off. The platform buttons open GitHub Releases, where you can choose an available download for your computer.</p>
   </noscript>
   <script src="site.js" defer></script>
 </body>

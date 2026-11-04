@@ -219,9 +219,11 @@ header lists its other commands.
 
 ## Website
 
-The static GitHub Pages site lives in `site`. It resolves the newest Windows
-installer through the public GitHub Releases API and falls back to the latest
-release page if a direct download cannot be found.
+The static GitHub Pages site lives in `site`. It resolves the Windows installer,
+macOS app zip, and checksums from the latest public GitHub release. Each platform
+is resolved independently: a missing download is labelled unavailable in that
+release, and its button opens the release page. If the API is unavailable or
+JavaScript is disabled, both buttons open GitHub Releases.
 
 Preview it locally with:
 
