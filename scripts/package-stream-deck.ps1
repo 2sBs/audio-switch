@@ -43,6 +43,12 @@ if ($manifest.CategoryIcon) {
     }
 }
 
+# The package runs on both platforms, so the macOS controller must already be in
+# the plugin folder; build it with scripts/package-stream-deck.sh on a Mac.
+if (-not (Test-Path -LiteralPath (Join-Path $plugin 'audio-switch-stream-deck') -PathType Leaf)) {
+    throw "Missing $plugin\audio-switch-stream-deck; copy in the macOS controller first."
+}
+
 & $cargoPath build --locked --release --bin audio-switch-stream-deck --target-dir $buildTarget
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
 
