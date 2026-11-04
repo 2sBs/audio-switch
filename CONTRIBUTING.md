@@ -35,6 +35,11 @@ build. Select the headset, start recording from the virtual cable, then stop.
 Confirm sidetone follows recording, the selected mic stays remembered while idle,
 and the beginning of a recording has acceptable startup latency.
 
+On macOS, `cargo run -p audio-switch-core --example route_spike -- demand <cable-uid> [seconds] [capture-uid]`
+prints recording demand on the cable as it changes. Record from the cable with
+another app, for example `ffmpeg -f avfoundation -i ":BlackHole 2ch"`, to see it
+turn true and back to false.
+
 Protocol 1 reports an idle microphone as `routing` so older Stream Deck
 controllers still recognize it as ready. The tray's route status distinguishes
 idle capture from a running stream.
@@ -44,7 +49,7 @@ Preserve these project boundaries:
 - Routing uses configurable Primary and Secondary roles, not hard-coded device
   names.
 - Audio Switch does not bundle or download a third-party virtual audio driver.
-- The Stream Deck plugin controls the tray app and never launches its own copy.
+- The Stream Deck plugin controls the running app and never launches its own copy.
 - Saved routes do not silently fall back when a configured device disconnects.
 
 Do not commit generated files from `target\`, `dist\`, or plugin packaging. If a
