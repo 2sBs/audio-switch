@@ -27,7 +27,7 @@ struct UiState {
 #[derive(Clone, PartialEq, Eq)]
 enum TrayStatus {
     Unknown,
-    Available(UiState),
+    Available(Box<UiState>),
     Unavailable,
 }
 
@@ -75,9 +75,10 @@ fn run(args: &[String]) -> Result<()> {
         if last_poll.elapsed() >= Duration::from_secs(1) {
             match request_state(ControlCommand::GetState { request_id: None }) {
                 Ok(state) => {
-                    if tray_status != TrayStatus::Available(state.clone()) {
+                    if !matches!(&tray_status, TrayStatus::Available(current) if **current == state)
+                    {
                         update_contexts(&mut socket, &contexts, &state)?;
-                        tray_status = TrayStatus::Available(state);
+                        tray_status = TrayStatus::Available(Box::new(state));
                     }
                 }
                 Err(error) => {
@@ -138,7 +139,7 @@ fn handle_event(
                     if let Some(context) = context {
                         send_json(socket, &json!({ "event": "showOk", "context": context }))?;
                     }
-                    *tray_status = TrayStatus::Available(state);
+                    *tray_status = TrayStatus::Available(Box::new(state));
                 }
                 Err(error) => {
                     update_unavailable_contexts(socket, contexts)?;

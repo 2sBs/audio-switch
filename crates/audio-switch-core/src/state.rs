@@ -48,13 +48,24 @@ pub struct AppState {
 /// Bluetooth earbuds), so this is informational: the mirror pauses while the
 /// system output is elsewhere, and the system input never changes routing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SystemAudio {
-    /// Name of the system output when it is not the Primary playback device.
-    pub other_output: Option<String>,
-    /// Name of the system input when it is not the virtual cable.
-    pub other_input: Option<String>,
+    /// The system output, when it is not the Primary playback device.
+    pub output: Option<DeviceMismatch>,
+    /// The system input, when it is not the virtual cable's recording side.
+    pub input: Option<DeviceMismatch>,
+}
+
+/// A system default device that differs from the configured one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct DeviceMismatch {
+    /// Name of the device the system is using.
+    pub current: String,
+    /// Name of the configured device, when it is connected.
+    pub expected: Option<String>,
 }
 
 impl AppState {

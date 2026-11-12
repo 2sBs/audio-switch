@@ -2,7 +2,7 @@
 //! connected devices differ from the configured setup.
 
 use crate::config::AppConfig;
-use crate::state::{AppState, EndpointAvailability, RouteStatus};
+use crate::state::{AppState, DeviceMismatch, EndpointAvailability, RouteStatus};
 
 const SYSTEM: &str = if cfg!(target_os = "macos") {
     "macOS"
@@ -29,18 +29,23 @@ pub fn away_summary(
         mic: endpoints.secondary_capture.is_some() && !availability.secondary_mic,
         playback: endpoints.secondary_render.is_some() && !availability.secondary_render,
     };
-    let system = describe_system(
-        state.system_audio.other_output.as_deref(),
-        state.system_audio.other_input.as_deref(),
-    );
+    let system = &state.system_audio;
+    let output = system
+        .output
+        .as_ref()
+        .map(|output| describe_system("playing through", output));
+    let input = system
+        .input
+        .as_ref()
+        .map(|input| describe_system("recording from", input));
     let missing = describe_missing(primary, secondary);
-    if missing.is_none() && system.is_none() {
+    if missing.is_none() && output.is_none() && input.is_none() {
         return Vec::new();
     }
 
     let mirror_paused = matches!(state.mirror_status, RouteStatus::Waiting { .. })
         .then(|| "Mirroring is paused.".to_owned());
-    [missing, mirror_paused, system]
+    [missing, mirror_paused, output, input]
         .into_iter()
         .flatten()
         .collect()
@@ -78,14 +83,13 @@ fn describe_missing(primary: MissingRole, secondary: MissingRole) -> Option<Stri
     Some(format!("{} {verb} connected.", parts.join(" and ")))
 }
 
-fn describe_system(output: Option<&str>, input: Option<&str>) -> Option<String> {
-    Some(match (output, input) {
-        (Some(output), Some(input)) if output == input => format!("{SYSTEM} is using {output}."),
-        (Some(output), Some(input)) => format!("{SYSTEM} is using {output} and {input}."),
-        (Some(output), None) => format!("{SYSTEM} is playing through {output}."),
-        (None, Some(input)) => format!("{SYSTEM} is recording from {input}."),
-        (None, None) => return None,
-    })
+/// Names the configured device too, so the fix is clear. It is unnamed only
+/// when that device is missing, which the summary already reports.
+fn describe_system(action: &str, mismatch: &DeviceMismatch) -> String {
+    match &mismatch.expected {
+        Some(expected) => format!("{SYSTEM} is {action} {}, not {expected}.", mismatch.current),
+        None => format!("{SYSTEM} is {action} {}.", mismatch.current),
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +112,13 @@ mod tests {
             *id = Some("configured".into());
         }
         config
+    }
+
+    fn mismatch(current: &str, expected: Option<&str>) -> DeviceMismatch {
+        DeviceMismatch {
+            current: current.into(),
+            expected: expected.map(Into::into),
+        }
     }
 
     fn all_available() -> EndpointAvailability {
@@ -135,8 +146,8 @@ mod tests {
             reason: "waiting".into(),
         };
         state.system_audio = SystemAudio {
-            other_output: Some("Speakers".into()),
-            other_input: Some("Built-in Microphone".into()),
+            output: Some(mismatch("Speakers", None)),
+            input: Some(mismatch("Built-in Microphone", Some("BlackHole 2ch"))),
         };
         let undocked = EndpointAvailability {
             virtual_mic: true,
@@ -148,27 +159,29 @@ mod tests {
             [
                 "Desk and Headset devices aren't connected.".to_owned(),
                 "Mirroring is paused.".to_owned(),
-                format!("{SYSTEM} is using Speakers and Built-in Microphone."),
+                format!("{SYSTEM} is playing through Speakers."),
+                format!("{SYSTEM} is recording from Built-in Microphone, not BlackHole 2ch."),
             ]
         );
     }
 
     #[test]
-    fn earbuds_on_the_desk_name_one_device_once() {
+    fn other_system_devices_name_the_configured_ones() {
         let mut state = AppState::new(ActiveMic::Primary);
         state.mirror_status = RouteStatus::Waiting {
             reason: "waiting".into(),
         };
         state.system_audio = SystemAudio {
-            other_output: Some("Earbuds".into()),
-            other_input: Some("Earbuds".into()),
+            output: Some(mismatch("Earbuds", Some("Desk speakers"))),
+            input: Some(mismatch("Earbuds", Some("BlackHole 2ch"))),
         };
 
         assert_eq!(
             away_summary(&configured(), &state, all_available()),
             [
                 "Mirroring is paused.".to_owned(),
-                format!("{SYSTEM} is using Earbuds.")
+                format!("{SYSTEM} is playing through Earbuds, not Desk speakers."),
+                format!("{SYSTEM} is recording from Earbuds, not BlackHole 2ch."),
             ]
         );
     }

@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::audio::{AudioBackend, AudioError, CueKind, Endpoint, EndpointFlow};
 use crate::config::{AppConfig, ConfigError, ConfigStore};
 use crate::state::{
-    ActiveMic, AppState, DesiredTransition, EndpointAvailability, RouteStatus, RoutingStateMachine,
-    SystemAudio,
+    ActiveMic, AppState, DesiredTransition, DeviceMismatch, EndpointAvailability, RouteStatus,
+    RoutingStateMachine, SystemAudio,
 };
 
 const ROUTE_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -189,31 +189,41 @@ impl<B: AudioBackend> RoutingController<B> {
     /// configuration. Reports nothing for a role that is not configured yet.
     fn system_audio(&self, endpoints: &[Endpoint]) -> SystemAudio {
         let configured = &self.config.endpoints;
-        let other_output = system_default(endpoints, EndpointFlow::Render)
+        let find = |flow: EndpointFlow, id: &Option<String>| {
+            endpoints
+                .iter()
+                .find(|endpoint| endpoint.flow == flow && is_configured(endpoint, id))
+        };
+        let mismatch = |current: &Endpoint, expected: Option<&Endpoint>| DeviceMismatch {
+            current: current.name.clone(),
+            expected: expected.map(|endpoint| endpoint.name.clone()),
+        };
+
+        let primary_output = find(EndpointFlow::Render, &configured.primary_render);
+        let output = system_default(endpoints, EndpointFlow::Render)
             .filter(|output| {
                 configured.primary_render.is_some()
                     && !is_configured(output, &configured.primary_render)
             })
-            .map(|output| output.name.clone());
+            .map(|output| mismatch(output, primary_output));
+
         // Apps record from the cable's input side, which belongs to the same
-        // device as the output Audio Switch writes to.
-        let cable_device = endpoints
-            .iter()
-            .find(|endpoint| {
-                endpoint.flow == EndpointFlow::Render
-                    && is_configured(endpoint, &configured.virtual_render)
-            })
+        // device as the output Audio Switch writes to, unless settings name
+        // another recording device.
+        let cable_device = find(EndpointFlow::Render, &configured.virtual_render)
             .and_then(|cable| cable.device_id.as_ref());
-        let other_input = system_default(endpoints, EndpointFlow::Capture)
-            .filter(|input| {
-                configured.virtual_render.is_some()
-                    && (cable_device.is_none() || input.device_id.as_ref() != cable_device)
-            })
-            .map(|input| input.name.clone());
-        SystemAudio {
-            other_output,
-            other_input,
-        }
+        let is_cable_input = |endpoint: &Endpoint| match &configured.virtual_capture {
+            Some(_) => is_configured(endpoint, &configured.virtual_capture),
+            None => cable_device.is_some() && endpoint.device_id.as_ref() == cable_device,
+        };
+        let cable_input = endpoints
+            .iter()
+            .find(|endpoint| endpoint.flow == EndpointFlow::Capture && is_cable_input(endpoint));
+        let input = system_default(endpoints, EndpointFlow::Capture)
+            .filter(|input| configured.virtual_render.is_some() && !is_cable_input(input))
+            .map(|input| mismatch(input, cable_input));
+
+        SystemAudio { output, input }
     }
 
     fn execute(&mut self, transitions: Vec<DesiredTransition>) {
@@ -711,6 +721,15 @@ mod tests {
                 .retain(|endpoint| Some(&endpoint.id) == config.endpoints.virtual_render.as_ref());
             endpoints.push(laptop("speakers", EndpointFlow::Render));
             endpoints.push(laptop("microphone", EndpointFlow::Capture));
+            // The cable's recording side, paired with its output by device.
+            endpoints.push(Endpoint {
+                id: "cable-recording".into(),
+                name: "Cable recording".into(),
+                flow: EndpointFlow::Capture,
+                available: true,
+                system_default: false,
+                device_id: config.endpoints.virtual_render.clone(),
+            });
         }
         let store = ConfigStore::at(directory.path().join("settings.json"));
         let mut controller = RoutingController::new(backend, store, config);
@@ -723,8 +742,14 @@ mod tests {
         assert_eq!(
             state.system_audio,
             SystemAudio {
-                other_output: Some("Laptop speakers".into()),
-                other_input: Some("Laptop microphone".into()),
+                output: Some(DeviceMismatch {
+                    current: "Laptop speakers".into(),
+                    expected: None,
+                }),
+                input: Some(DeviceMismatch {
+                    current: "Laptop microphone".into(),
+                    expected: Some("Cable recording".into()),
+                }),
             }
         );
     }

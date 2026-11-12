@@ -15,5 +15,6 @@ pub use away::away_summary;
 pub use config::{AppConfig, ConfigStore, DeviceLabels, UpdatePolicy};
 pub use runtime::{ControllerError, RoutingController};
 pub use state::{
-    ActiveMic, AppState, EndpointAvailability, RouteStatus, RoutingStateMachine, SystemAudio,
+    ActiveMic, AppState, DeviceMismatch, EndpointAvailability, RouteStatus, RoutingStateMachine,
+    SystemAudio,
 };
