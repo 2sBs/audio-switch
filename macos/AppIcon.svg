@@ -1,0 +1,21 @@
+<!-- Source for macos/AudioSwitch/Assets.xcassets/AppIcon.appiconset. The mark
+     matches site/icon.svg, placed on the macOS icon grid (824px body on a
+     1024px canvas). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2733"/>
+      <stop offset="1" stop-color="#10141b"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#body)" filter="url(#shadow)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <g transform="translate(100 100) scale(5.7222)">
+    <path d="M34 52h40M70 42l12 10-12 10M110 92H70M74 82 62 92l12 10" fill="none" stroke="#63d8ff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="32" cy="92" r="10" fill="#f7f9fc"/>
+    <circle cx="112" cy="52" r="10" fill="#f7f9fc"/>
+  </g>
+</svg>

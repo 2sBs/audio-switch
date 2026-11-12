@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ActiveMic {
+    #[default]
     Primary,
     Secondary,
 }
@@ -18,6 +20,7 @@ impl ActiveMic {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RouteStatus {
     Stopped,
     Idle,
@@ -29,12 +32,40 @@ pub enum RouteStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AppState {
     pub protocol: u32,
     pub revision: u64,
     pub active_mic: ActiveMic,
     pub mic_status: RouteStatus,
     pub mirror_status: RouteStatus,
+    #[serde(default)]
+    pub system_audio: SystemAudio,
+}
+
+/// The system's own default devices, where they differ from the configured
+/// roles. Being away from the configured devices is normal (an undocked laptop,
+/// Bluetooth earbuds), so this is informational: the mirror pauses while the
+/// system output is elsewhere, and the system input never changes routing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct SystemAudio {
+    /// The system output, when it is not the Primary playback device.
+    pub output: Option<DeviceMismatch>,
+    /// The system input, when it is not the virtual cable's recording side.
+    pub input: Option<DeviceMismatch>,
+}
+
+/// A system default device that differs from the configured one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct DeviceMismatch {
+    /// Name of the device the system is using.
+    pub current: String,
+    /// Name of the configured device, when it is connected.
+    pub expected: Option<String>,
 }
 
 impl AppState {
@@ -45,20 +76,29 @@ impl AppState {
             active_mic,
             mic_status: RouteStatus::Stopped,
             mirror_status: RouteStatus::Stopped,
+            system_audio: SystemAudio::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct EndpointAvailability {
     pub primary_mic: bool,
     pub secondary_mic: bool,
     pub virtual_mic: bool,
     pub primary_render: bool,
     pub secondary_render: bool,
+    /// The Primary playback device is the system output, so there is
+    /// something worth mirroring.
+    pub primary_render_is_system_output: bool,
 }
 
 impl EndpointAvailability {
+    fn mirror_ready(self) -> bool {
+        self.primary_render && self.secondary_render && self.primary_render_is_system_output
+    }
+
     fn mic_available(self, active: ActiveMic) -> bool {
         match active {
             ActiveMic::Primary => self.primary_mic,
@@ -96,6 +136,17 @@ impl RoutingStateMachine {
 
     pub fn state(&self) -> &AppState {
         &self.state
+    }
+
+    pub fn availability(&self) -> EndpointAvailability {
+        self.availability
+    }
+
+    pub fn update_system_audio(&mut self, system_audio: SystemAudio) {
+        if self.state.system_audio != system_audio {
+            self.state.system_audio = system_audio;
+            self.bump_revision();
+        }
     }
 
     pub fn select_mic(&mut self, active: ActiveMic) -> Vec<DesiredTransition> {
@@ -172,10 +223,7 @@ impl RoutingStateMachine {
         {
             self.state.mic_status = RouteStatus::Routing;
         }
-        if mirror_was_routing
-            && self.availability.primary_render
-            && self.availability.secondary_render
-        {
+        if mirror_was_routing && self.availability.mirror_ready() {
             self.state.mirror_status = RouteStatus::Routing;
         }
 
@@ -203,7 +251,7 @@ impl RoutingStateMachine {
     fn reconcile_status(&mut self) {
         self.state.mic_status = if !self.availability.virtual_mic {
             RouteStatus::Error {
-                message: "virtual microphone render endpoint is unavailable".into(),
+                message: "the virtual cable is not connected".into(),
             }
         } else if !self.availability.mic_available(self.state.active_mic) {
             RouteStatus::Waiting {
@@ -223,13 +271,19 @@ impl RoutingStateMachine {
             RouteStatus::Starting
         };
 
+        // A missing playback device is an expected state, such as an undocked
+        // laptop, not an error.
         self.state.mirror_status = if !self.availability.primary_render {
-            RouteStatus::Error {
-                message: "primary render endpoint is unavailable".into(),
+            RouteStatus::Waiting {
+                reason: "waiting for the primary playback device".into(),
             }
         } else if !self.availability.secondary_render {
             RouteStatus::Waiting {
-                reason: "waiting for the secondary playback endpoint".into(),
+                reason: "waiting for the secondary playback device".into(),
+            }
+        } else if !self.availability.primary_render_is_system_output {
+            RouteStatus::Waiting {
+                reason: "paused while the system plays through another output".into(),
             }
         } else {
             RouteStatus::Starting
@@ -252,7 +306,50 @@ mod tests {
             virtual_mic: true,
             primary_render: true,
             secondary_render: true,
+            primary_render_is_system_output: true,
         }
+    }
+
+    #[test]
+    fn missing_playback_device_waits_instead_of_failing() {
+        let mut machine = RoutingStateMachine::new(ActiveMic::Primary, all_available());
+        machine.mirror_started();
+        let transitions = machine.update_availability(
+            EndpointAvailability {
+                primary_render: false,
+                primary_render_is_system_output: false,
+                ..all_available()
+            },
+            Ok(true),
+        );
+
+        assert!(matches!(
+            machine.state().mirror_status,
+            RouteStatus::Waiting { .. }
+        ));
+        assert!(transitions.contains(&DesiredTransition::StopMirror));
+        assert!(machine.retry_failed_routes().is_empty());
+    }
+
+    #[test]
+    fn mirror_pauses_while_the_system_plays_elsewhere() {
+        let mut machine = RoutingStateMachine::new(ActiveMic::Primary, all_available());
+        machine.mic_started();
+        machine.mirror_started();
+        let elsewhere = EndpointAvailability {
+            primary_render_is_system_output: false,
+            ..all_available()
+        };
+
+        assert_eq!(
+            machine.update_availability(elsewhere, Ok(true)),
+            [DesiredTransition::StopMirror]
+        );
+        assert!(matches!(machine.state().mic_status, RouteStatus::Routing));
+        assert_eq!(
+            machine.update_availability(all_available(), Ok(true)),
+            [DesiredTransition::StartMirror]
+        );
     }
 
     #[test]

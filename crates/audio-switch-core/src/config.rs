@@ -11,6 +11,7 @@ pub const CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct EndpointIds {
     pub primary_render: Option<String>,
     pub secondary_render: Option<String>,
@@ -23,6 +24,7 @@ pub struct EndpointIds {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct DeviceLabels {
     pub primary: String,
     pub secondary: String,
@@ -39,6 +41,7 @@ impl Default for DeviceLabels {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HotkeyConfig {
     pub modifiers: Vec<String>,
     pub key: String,
@@ -57,6 +60,7 @@ impl Default for HotkeyConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub mirror_buffer_ms: u32,
@@ -67,6 +71,7 @@ pub struct AudioConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum UpdatePolicy {
     #[default]
     Automatic,
@@ -88,6 +93,7 @@ impl Default for AudioConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AppConfig {
     pub version: u32,
     pub endpoints: EndpointIds,
@@ -127,8 +133,26 @@ pub enum ConfigError {
     Json(#[from] serde_json::Error),
     #[error("unsupported configuration version {found}; expected {expected}")]
     UnsupportedVersion { found: u32, expected: u32 },
-    #[error("LOCALAPPDATA is unavailable")]
-    MissingLocalAppData,
+    #[error("{0} is unavailable")]
+    MissingDataDirectory(&'static str),
+}
+
+/// Per-user directory that holds settings, logs, and update state.
+#[cfg(windows)]
+pub fn data_directory() -> Result<PathBuf, ConfigError> {
+    let root = std::env::var_os("LOCALAPPDATA")
+        .ok_or(ConfigError::MissingDataDirectory("LOCALAPPDATA"))?;
+    Ok(PathBuf::from(root).join("AudioSwitch"))
+}
+
+/// Per-user directory that holds settings, logs, and update state.
+#[cfg(not(windows))]
+pub fn data_directory() -> Result<PathBuf, ConfigError> {
+    let home = std::env::var_os("HOME").ok_or(ConfigError::MissingDataDirectory("HOME"))?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("AudioSwitch"))
 }
 
 #[derive(Debug, Clone)]
@@ -138,12 +162,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn for_current_user() -> Result<Self, ConfigError> {
-        let root = std::env::var_os("LOCALAPPDATA").ok_or(ConfigError::MissingLocalAppData)?;
-        Ok(Self::at(
-            PathBuf::from(root)
-                .join("AudioSwitch")
-                .join("settings.json"),
-        ))
+        Ok(Self::at(data_directory()?.join("settings.json")))
     }
 
     pub fn at(path: impl Into<PathBuf>) -> Self {

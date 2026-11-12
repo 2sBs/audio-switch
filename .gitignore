@@ -1,6 +1,10 @@
 /target/
 /dist/
+/macos/Generated/
+/macos/Local.xcconfig
+xcuserdata/
 /stream-deck/**/*.exe
+/stream-deck/**/audio-switch-stream-deck
 /stream-deck/**/imgs/plugin*.png
 *.log
 *.pdb

@@ -1,15 +1,20 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![forbid(unsafe_op_in_unsafe_fn)]
+
+//! Stream Deck plugin process. It relays key presses to the running Audio
+//! Switch app over the local control channel and mirrors its route on the keys.
+
 use std::collections::HashSet;
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use audio_switch_core::control;
 use audio_switch_core::ipc::{ControlCommand, ControlMessage};
 use audio_switch_core::{ActiveMic, AppState, DeviceLabels, RouteStatus};
 use serde_json::{Value, json};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as WebSocketError, Message, WebSocket, connect};
-
-use crate::local_control;
 
 type StreamDeckSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -22,11 +27,15 @@ struct UiState {
 #[derive(Clone, PartialEq, Eq)]
 enum TrayStatus {
     Unknown,
-    Available(UiState),
+    Available(Box<UiState>),
     Unavailable,
 }
 
-pub fn run(args: &[String]) -> Result<()> {
+fn main() -> Result<()> {
+    run(&std::env::args().collect::<Vec<_>>())
+}
+
+fn run(args: &[String]) -> Result<()> {
     let port = argument(args, "-port")?;
     let plugin_uuid = argument(args, "-pluginUUID")?;
     let register_event = argument(args, "-registerEvent")?;
@@ -66,9 +75,10 @@ pub fn run(args: &[String]) -> Result<()> {
         if last_poll.elapsed() >= Duration::from_secs(1) {
             match request_state(ControlCommand::GetState { request_id: None }) {
                 Ok(state) => {
-                    if tray_status != TrayStatus::Available(state.clone()) {
+                    if !matches!(&tray_status, TrayStatus::Available(current) if **current == state)
+                    {
                         update_contexts(&mut socket, &contexts, &state)?;
-                        tray_status = TrayStatus::Available(state);
+                        tray_status = TrayStatus::Available(Box::new(state));
                     }
                 }
                 Err(error) => {
@@ -129,7 +139,7 @@ fn handle_event(
                     if let Some(context) = context {
                         send_json(socket, &json!({ "event": "showOk", "context": context }))?;
                     }
-                    *tray_status = TrayStatus::Available(state);
+                    *tray_status = TrayStatus::Available(Box::new(state));
                 }
                 Err(error) => {
                     update_unavailable_contexts(socket, contexts)?;
@@ -190,7 +200,7 @@ fn update_unavailable_contexts(
 }
 
 fn request_state(command: ControlCommand) -> Result<UiState> {
-    match local_control::send_command(&command)? {
+    match control::send_command(&command)? {
         ControlMessage::State { state, labels, .. } => Ok(UiState { state, labels }),
         ControlMessage::Error { message, .. } => Err(anyhow!(message)),
     }

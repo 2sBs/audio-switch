@@ -5,17 +5,24 @@ use crate::state::ActiveMic;
 use super::CueKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum EndpointFlow {
     Render,
     Capture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Endpoint {
     pub id: String,
     pub name: String,
     pub flow: EndpointFlow,
     pub available: bool,
+    /// The system's default device for this flow.
+    pub system_default: bool,
+    /// Identifies the device that owns this endpoint. A device's input and
+    /// output endpoints share it, which pairs a virtual cable's two sides.
+    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Error)]

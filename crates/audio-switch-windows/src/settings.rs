@@ -1433,12 +1433,16 @@ mod tests {
                 name: "CABLE In 16ch (VB-Audio Virtual Cable)".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             },
             Endpoint {
                 id: "standard-cable".into(),
                 name: "CABLE Input (VB-Audio Virtual Cable)".into(),
                 flow: EndpointFlow::Render,
                 available: true,
+                system_default: false,
+                device_id: None,
             },
         ];
 

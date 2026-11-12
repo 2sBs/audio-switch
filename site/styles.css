@@ -9,7 +9,7 @@
   --quiet: #696969;
   --accent: #ffa5b6;
   --success: #69d391;
-  font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
   background: var(--black);
   color: var(--text);
   font-synthesis: none;
@@ -51,7 +51,6 @@ img { display: block; }
 .port-label,
 .running-status,
 .release-facts dt,
-.download-status,
 .control-label {
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   text-transform: uppercase;
@@ -113,24 +112,32 @@ img { display: block; }
   line-height: 1.55;
 }
 
-.hero-actions { display: flex; gap: 22px; align-items: center; margin-top: 32px; flex-wrap: wrap; }
+.hero-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 32px; }
+.download-option { min-width: 0; }
 .download-button {
-  display: inline-flex;
-  justify-content: center;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  min-height: 48px;
-  padding: 0 20px;
+  gap: 10px;
+  min-height: 64px;
+  padding: 14px 16px;
   border: 1px solid var(--accent);
   border-radius: 2px;
   background: var(--accent);
   color: #000;
   font-weight: 750;
+  font-size: 14px;
+  line-height: 1.3;
   text-decoration: none;
 }
+.download-button svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .download-button:hover, .download-button:focus-visible { background: transparent; color: var(--accent); }
+.download-requirements { margin: 12px 0 0; color: #d4d4d4; font-size: 12px; line-height: 1.6; }
+.download-requirements span { display: block; color: var(--muted); }
+.release-links { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 22px; font-size: 13px; }
 .release-link { color: #b8b8b8; text-underline-offset: 4px; }
 .release-link:hover, .release-link:focus-visible { color: #fff; }
-.download-status { min-height: 18px; margin: 14px 0 0; color: #707070; font-size: 9px; line-height: 1.5; }
+.download-status { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .download-status[data-state="ready"] { color: var(--success); }
 
 .release-facts {
@@ -170,7 +177,7 @@ img { display: block; }
   color: #b5b5b5;
   font-size: 12px;
 }
-.window-controls { color: #666; font-family: monospace; letter-spacing: .45em; }
+.window-detail { color: #999; font-size: 10px; }
 .monitor-body { padding: 26px; }
 .monitor-heading { display: flex; justify-content: space-between; gap: 22px; align-items: start; }
 .monitor-heading h2 { margin: 0; font-size: 23px; letter-spacing: -.03em; }
@@ -179,7 +186,7 @@ img { display: block; }
 
 .signal-path {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 50px minmax(120px, 1fr) 50px minmax(120px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr) 34px minmax(0, 1fr);
   grid-template-rows: 1fr 1fr;
   align-items: stretch;
   margin-top: 28px;
@@ -214,7 +221,7 @@ img { display: block; }
 .control-label { display: grid; place-items: center start; padding: 11px 13px; color: #666; font-size: 8px; }
 .control-item { padding: 11px 13px; border-left: 1px solid #262326; color: #aaa; text-align: center; font-size: 11px; }
 .control-active { color: #000; background: var(--accent); font-weight: 700; }
-.routing-note { margin: 15px 0 0; color: #626262; font: 9px/1.5 "Cascadia Code", Consolas, monospace; }
+.routing-note { margin: 15px 0 0; color: #999; font: 10px/1.6 "Cascadia Code", Consolas, monospace; }
 kbd { font: inherit; color: inherit; }
 
 .feature-table { background: var(--panel); border-top: 1px solid #1d1d1d; scroll-margin-top: 20px; }
@@ -238,6 +245,11 @@ kbd { font: inherit; color: inherit; }
   scroll-margin-top: 20px;
 }
 .setup h2 { margin: 18px 0 0; font-size: clamp(34px, 4vw, 54px); line-height: 1; letter-spacing: -.05em; }
+.system-requirements { max-width: 380px; margin: 30px 0 0; }
+.system-requirements div { padding: 13px 0; border-top: 1px solid var(--line); }
+.system-requirements dt { font-size: 13px; font-weight: 650; }
+.system-requirements dt span { margin-left: 8px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.system-requirements dd { margin: 5px 0 0; color: #aaa; font-size: 13px; line-height: 1.55; }
 .setup-list { display: grid; margin: 0; padding: 0; list-style: none; }
 .setup-list li { display: grid; grid-template-columns: 44px 1fr; gap: 15px; padding: 14px 0; }
 .setup-list li > span { color: var(--accent); font: 10px/1.5 "Cascadia Code", Consolas, monospace; padding-top: 4px; }
@@ -257,14 +269,14 @@ kbd { font: inherit; color: inherit; }
   align-items: start;
   padding: 34px clamp(24px, 4vw, 60px);
   border-top: 1px solid #1d1d1d;
-  color: #666;
+  color: #999;
   font-size: 12px;
 }
 .site-footer strong { color: #fff; }
 .site-footer p { margin: 7px 0 0; line-height: 1.5; }
 .site-footer nav { display: flex; flex-wrap: wrap; gap: 18px; }
 .site-footer a { color: #999; text-underline-offset: 4px; }
-.installer-note { margin-top: 0 !important; }
+.installer-note > p:first-child { margin-top: 0; }
 .noscript-note { margin: 0; padding: 12px 24px; background: var(--accent); color: #000; text-align: center; font-size: 13px; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
@@ -282,6 +294,8 @@ kbd { font: inherit; color: inherit; }
   .site-nav a:not(:last-child) { display: none; }
   .hero-copy { padding: 64px 22px; }
   .hero-copy h1 { font-size: clamp(46px, 15vw, 68px); }
+  .hero-actions { gap: 12px; }
+  .download-button { padding: 12px; font-size: 13px; }
   .release-facts { grid-template-columns: 1fr 1fr; }
   .routing-stage { padding: 40px 18px 60px; }
   .monitor-body { padding: 20px 16px; }

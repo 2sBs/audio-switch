@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rtrb::{Consumer, Producer, RingBuffer};
+use rtrb::{Consumer, Producer};
 use wasapi::{
     Device, DeviceEnumerator, DeviceState, Direction, SampleType, StreamMode, WaveFormat,
     initialize_mta,
@@ -12,44 +12,13 @@ use wasapi::{
 use super::microphone_activity::{ActivityMonitor, ActivityWake};
 use crate::state::ActiveMic;
 
-use super::{
-    AudioBackend, AudioError, CueKind, DriftController, DriftControllerConfig, Endpoint,
-    EndpointFlow, synthesize_cue,
+use super::bridge::{
+    AdaptiveReader, AtomicDiagnostics, RouteDiagnostics, frames_for_ms, primed_ring,
 };
+use super::{AudioBackend, AudioError, CueKind, Endpoint, EndpointFlow, synthesize_cue};
 
 const START_TIMEOUT: Duration = Duration::from_secs(8);
 const EVENT_TIMEOUT_MS: u32 = 100;
-const RING_CAPACITY_MULTIPLIER: usize = 8;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RouteDiagnostics {
-    pub captured_frames: u64,
-    pub rendered_frames: u64,
-    pub underrun_frames: u64,
-    pub overrun_frames: u64,
-    pub discontinuities: u64,
-}
-
-#[derive(Debug, Default)]
-struct AtomicDiagnostics {
-    captured_frames: AtomicU64,
-    rendered_frames: AtomicU64,
-    underrun_frames: AtomicU64,
-    overrun_frames: AtomicU64,
-    discontinuities: AtomicU64,
-}
-
-impl AtomicDiagnostics {
-    fn snapshot(&self) -> RouteDiagnostics {
-        RouteDiagnostics {
-            captured_frames: self.captured_frames.load(Ordering::Relaxed),
-            rendered_frames: self.rendered_frames.load(Ordering::Relaxed),
-            underrun_frames: self.underrun_frames.load(Ordering::Relaxed),
-            overrun_frames: self.overrun_frames.load(Ordering::Relaxed),
-            discontinuities: self.discontinuities.load(Ordering::Relaxed),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct RouteHandle {
@@ -135,19 +104,31 @@ impl WasapiBackend {
             Direction::Render => EndpointFlow::Render,
             Direction::Capture => EndpointFlow::Capture,
         };
+        // Fails when the direction has no default device, for example with no
+        // speakers connected.
+        let system_default = enumerator
+            .get_default_device(&direction)
+            .and_then(|device| device.get_id())
+            .ok();
 
         collection
             .into_iter()
             .map(|device| {
                 let device = device.map_err(audio_backend_error)?;
+                let id = device.get_id().map_err(audio_backend_error)?;
                 Ok(Endpoint {
-                    id: device.get_id().map_err(audio_backend_error)?,
+                    system_default: system_default.as_ref() == Some(&id),
                     name: device.get_friendlyname().map_err(audio_backend_error)?,
                     flow,
                     available: matches!(
                         device.get_state().map_err(audio_backend_error)?,
                         DeviceState::Active
                     ),
+                    // Endpoints on one audio adapter share its interface name.
+                    // A virtual cable's input and output endpoints both belong
+                    // to the cable driver's adapter.
+                    device_id: device.get_interface_friendlyname().ok(),
+                    id,
                 })
             })
             .collect()
@@ -352,15 +333,7 @@ fn run_bridge(
     started: mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), AudioError> {
     let target_frames = frames_for_ms(specification.sample_rate, specification.target_buffer_ms);
-    let capacity_samples = target_frames
-        .saturating_mul(specification.output_channels)
-        .saturating_mul(RING_CAPACITY_MULTIPLIER)
-        .max(specification.output_channels * 64);
-    let (mut producer, consumer) = RingBuffer::<f32>::new(capacity_samples);
-
-    for _ in 0..target_frames.saturating_mul(specification.output_channels) {
-        let _ = producer.push(0.0);
-    }
+    let (producer, consumer) = primed_ring(target_frames, specification.output_channels);
 
     let capture_stop = Arc::clone(&stop);
     let capture_diagnostics = Arc::clone(&diagnostics);
@@ -617,7 +590,7 @@ fn render_loop(
         let mut samples = vec![0.0_f32; buffer_frames * channels];
         let mut bytes = vec![0_u8; buffer_frames * channels * size_of::<f32>()];
         let mut reader =
-            AdaptiveReader::new(consumer, channels, target_frames, diagnostics.clone());
+            AdaptiveReader::new(consumer, channels, target_frames, 1.0, diagnostics.clone());
 
         // Prime the endpoint with silence without draining the cross-device ring.
         // Shared-mode render buffers commonly request more than the low-latency mic
@@ -751,78 +724,6 @@ fn play_cue_once(
     })
 }
 
-struct AdaptiveReader {
-    consumer: Consumer<f32>,
-    channels: usize,
-    current: Vec<f32>,
-    next: Vec<f32>,
-    phase: f64,
-    initialized: bool,
-    drift: DriftController,
-    diagnostics: Arc<AtomicDiagnostics>,
-}
-
-impl AdaptiveReader {
-    fn new(
-        consumer: Consumer<f32>,
-        channels: usize,
-        target_frames: usize,
-        diagnostics: Arc<AtomicDiagnostics>,
-    ) -> Self {
-        Self {
-            consumer,
-            channels,
-            current: vec![0.0; channels],
-            next: vec![0.0; channels],
-            phase: 0.0,
-            initialized: false,
-            drift: DriftController::new(DriftControllerConfig::for_target(target_frames)),
-            diagnostics,
-        }
-    }
-
-    fn render(&mut self, destination: &mut [f32]) {
-        debug_assert_eq!(destination.len() % self.channels, 0);
-        if !self.initialized {
-            Self::pop_frame_from(&mut self.consumer, &mut self.current, &self.diagnostics);
-            Self::pop_frame_from(&mut self.consumer, &mut self.next, &self.diagnostics);
-            self.initialized = true;
-        }
-        let buffered_frames = self.consumer.slots() / self.channels;
-        let ratio = self.drift.ratio(buffered_frames);
-
-        for output in destination.chunks_exact_mut(self.channels) {
-            for (channel, sample) in output.iter_mut().enumerate() {
-                *sample = self.current[channel]
-                    + (self.next[channel] - self.current[channel]) * self.phase as f32;
-            }
-            self.phase += ratio;
-            while self.phase >= 1.0 {
-                self.current.copy_from_slice(&self.next);
-                Self::pop_frame_from(&mut self.consumer, &mut self.next, &self.diagnostics);
-                self.phase -= 1.0;
-            }
-        }
-    }
-
-    fn pop_frame_from(
-        consumer: &mut Consumer<f32>,
-        destination: &mut [f32],
-        diagnostics: &AtomicDiagnostics,
-    ) {
-        if consumer.slots() < destination.len() {
-            destination.fill(0.0);
-            diagnostics.underrun_frames.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        for sample in destination {
-            *sample = consumer
-                .pop()
-                .expect("the complete frame was available in the ring buffer");
-        }
-    }
-}
-
 struct StreamGuard<'a>(&'a wasapi::AudioClient);
 
 impl Drop for StreamGuard<'_> {
@@ -856,10 +757,6 @@ fn find_active_device(
         }
     }
     Err(AudioError::EndpointNotFound(endpoint_id.into()))
-}
-
-fn frames_for_ms(sample_rate: u32, milliseconds: u32) -> usize {
-    ((sample_rate as u64 * milliseconds as u64) / 1_000).max(1) as usize
 }
 
 fn read_f32(bytes: &[u8], offset: usize) -> f32 {
@@ -904,12 +801,6 @@ mod tests {
     }
 
     #[test]
-    fn millisecond_conversion_never_returns_an_empty_buffer() {
-        assert_eq!(frames_for_ms(48_000, 30), 1_440);
-        assert_eq!(frames_for_ms(48_000, 0), 1);
-    }
-
-    #[test]
     fn float_byte_conversion_round_trips() {
         let values = [-1.0_f32, 0.0, 0.5, 1.0];
         let mut bytes = [0_u8; 16];
@@ -917,16 +808,5 @@ mod tests {
         for (index, expected) in values.into_iter().enumerate() {
             assert_eq!(read_f32(&bytes, index * 4), expected);
         }
-    }
-
-    #[test]
-    fn adaptive_reader_outputs_silence_on_underflow() {
-        let (_producer, consumer) = RingBuffer::<f32>::new(8);
-        let diagnostics = Arc::new(AtomicDiagnostics::default());
-        let mut reader = AdaptiveReader::new(consumer, 2, 2, diagnostics.clone());
-        let mut output = [1.0_f32; 8];
-        reader.render(&mut output);
-        assert_eq!(output, [0.0; 8]);
-        assert!(diagnostics.snapshot().underrun_frames > 0);
     }
 }

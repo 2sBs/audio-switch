@@ -28,10 +28,16 @@
   "Category": "Audio Switch",
   "CategoryIcon": "imgs/category",
   "CodePath": "audio-switch-stream-deck.exe",
-  "Description": "Control the running Audio Switch tray app and show the active route.",
+  "CodePathMac": "audio-switch-stream-deck",
+  "CodePathWin": "audio-switch-stream-deck.exe",
+  "Description": "Control the running Audio Switch app and show the active route.",
   "Icon": "imgs/plugin",
   "Name": "Audio Switch",
   "OS": [
+    {
+      "MinimumVersion": "14.2",
+      "Platform": "mac"
+    },
     {
       "MinimumVersion": "10",
       "Platform": "windows"
